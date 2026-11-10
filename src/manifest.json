@@ -1,0 +1,9 @@
+{
+  "name": "速驱智控",
+  "appid": "",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "vueVersion": "3",
+  "transformPx": false,
+  "uniStatistics": { "enable": false }
+}

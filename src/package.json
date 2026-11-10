@@ -1,0 +1,23 @@
+{
+  "name": "suqu-smart-control",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:package": "node --test tests/package.check.mjs",
+    "build:h5": "node tools/build.mjs",
+    "build:apk": "python tools/build-apk.py"
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "3.0.0-alpha-5030620261106001",
+    "@dcloudio/uni-app-plus": "3.0.0-alpha-5030620261106001",
+    "@dcloudio/uni-components": "3.0.0-alpha-5030620261106001",
+    "@dcloudio/uni-h5": "3.0.0-alpha-5030620261106001",
+    "vue": "3.4.21"
+  },
+  "devDependencies": {
+    "@dcloudio/vite-plugin-uni": "3.0.0-alpha-5030620261106001",
+    "vite": "5.2.8"
+  }
+}
