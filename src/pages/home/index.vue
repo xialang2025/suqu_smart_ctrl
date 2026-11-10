@@ -20,7 +20,7 @@
         </view>
         <view v-if="!state.devices.length" class="empty">{{ state.scanning ? '正在寻找附近的蓝牙设备…' : '暂无设备' }}<br />请确认模块已开启</view>
     </view>
-    <view v-else class="screen control-screen" data-page="control">
+    <view v-else class="screen control-screen" data-page="control" :style="{ height: viewportHeight + 'px' }">
         <view class="control-heading">
             <button class="secondary" data-action="back" @click="application.backToDevices">返回设备页</button>
             <button v-if="['ready', 'checking', 'suspended', 'disconnect-error'].includes(state.status)" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
@@ -28,13 +28,16 @@
             <button v-if="state.status === 'disconnected'" class="secondary" data-action="reconnect" @click="application.connect(state.currentDevice.deviceId)">重新连接</button>
             <text :class="{ ready: state.status === 'ready', failed: state.status !== 'ready' }">{{ connectionLabel() }}</text>
         </view>
-        <view class="device-name control-device">{{ state.currentDevice?.name }}</view>
-        <view class="device-address">{{ state.currentDevice?.deviceId }}</view>
+        <view class="control-identity">
+            <view class="device-name control-device">{{ state.currentDevice?.name }}</view>
+            <view class="device-address">{{ state.currentDevice?.deviceId }}</view>
+        </view>
         <view class="notice" role="status">{{ state.message }}</view>
-        <view class="section data-panel">
-            <view class="section-title">接收窗口</view>
-            <scroll-view class="data-scroll" scroll-y>
-                <view v-for="record in state.received" :key="record.id" class="data-record" data-direction="receive" :data-record-type="record.type">
+        <view class="section data-panel" data-window="receive">
+            <view class="panel-heading"><view class="section-title">接收窗口</view><button class="clear-button" data-action="clear-receive" @click="clearRecords('receive')">清空</button></view>
+            <view v-if="state.receivedDropped" class="capacity-note">已淘汰最旧 {{ state.receivedDropped }} 条显示记录</view>
+            <scroll-view ref="receiveScroll" class="data-scroll" scroll-y :scroll-into-view="receiveAnchor" @scroll="receiveScrolled" @scrolltolower="receiveFollowing = true">
+                <view v-for="record in state.received" :id="'receive-' + record.id" :key="record.id" class="data-record" data-direction="receive" :data-record-type="record.type">
                     <view v-if="record.type === 'marker'" class="session-marker">{{ record.time }} · {{ record.text }}</view>
                     <template v-else>
                         <view class="record-meta">{{ record.time }} · {{ record.length }} 字节</view>
@@ -44,10 +47,11 @@
                 <view v-if="!state.received.length" class="empty">等待设备数据</view>
             </scroll-view>
         </view>
-        <view class="section data-panel send-panel">
-            <view class="section-title">发送窗口</view>
-            <scroll-view class="data-scroll" scroll-y>
-                <view v-for="record in state.sent" :key="record.id" class="data-record" data-direction="send" :data-record-type="record.type">
+        <view class="section data-panel send-panel" data-window="send">
+            <view class="panel-heading"><view class="section-title">发送窗口</view><button class="clear-button" data-action="clear-send" @click="clearRecords('send')">清空</button></view>
+            <view v-if="state.sentDropped" class="capacity-note">已淘汰最旧 {{ state.sentDropped }} 条显示记录</view>
+            <scroll-view ref="sendScroll" class="data-scroll" scroll-y :scroll-into-view="sendAnchor" @scroll="sendScrolled" @scrolltolower="sendFollowing = true">
+                <view v-for="record in state.sent" :id="'send-' + record.id" :key="record.id" class="data-record" data-direction="send" :data-record-type="record.type">
                     <view v-if="record.type === 'marker'" class="session-marker">{{ record.time }} · {{ record.text }}</view>
                     <template v-else>
                         <view class="record-meta">{{ record.time }} · {{ record.length }} 字节 <text :class="record.status">{{ writeStatus(record) }}</text></view>
@@ -66,11 +70,102 @@
 </template>
 <script setup>
 //20261110-0 add - Observe the shared application instead of owning native listeners.
-import { shallowRef, onMounted, onUnmounted } from 'vue';
+import { shallowRef, onMounted, onUnmounted, watch, nextTick } from 'vue'; //20261110-7 change
 import { application, platform } from '../../common/runtime.js';
 
 const state = shallowRef({ ...application.state });
 const unsubscribe = application.subscribe(observe);
+//20261110-7 add - Follow the visual viewport and keep each reader's scroll position independent.
+const viewportHeight = shallowRef(typeof window === 'undefined' ? 800 : window.visualViewport?.height || window.innerHeight);
+const receiveFollowing = shallowRef(true);
+const sendFollowing = shallowRef(true);
+const receiveScroll = shallowRef(null);
+const sendScroll = shallowRef(null);
+const receiveAnchor = shallowRef('');
+const sendAnchor = shallowRef('');
+
+watch(function recordTails() { return [state.value.page, state.value.received.at(-1)?.id, state.value.sent.at(-1)?.id]; }, followRecords, { flush: 'post' });
+/******************************************************************************
+ * Function Name   : followRecords
+ * Description     : Scroll only after new record elements exist, while preserving readers of older data.
+ * Input Parameters: tails
+ * Return Value    : Promise resolved after the rendered records are available.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function followRecords(tails) { //20261110-7 add
+    await nextTick();
+    if (tails[0] !== 'control') {
+        return;
+    }
+    if (receiveFollowing.value) {
+        receiveAnchor.value = tails[1] ? 'receive-' + tails[1] : '';
+    }
+    if (sendFollowing.value) {
+        sendAnchor.value = tails[2] ? 'send-' + tails[2] : '';
+    }
+}
+
+/******************************************************************************
+ * Function Name   : updateViewport
+ * Description     : Size the control screen to the visible area after keyboard and window changes.
+ * Input Parameters: None
+ * Return Value    : None
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function updateViewport() { //20261110-7 add
+    viewportHeight.value = window.visualViewport?.height || window.innerHeight;
+}
+
+/******************************************************************************
+ * Function Name   : followingBottom
+ * Description     : Follow new records only while the reader remains close to the end of that window.
+ * Input Parameters: event, element
+ * Return Value    : True when the scroll position is near the last record.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function followingBottom(event, element) { //20261110-7 add
+    const height = element?.$el?.clientHeight || element?.clientHeight || 0;
+
+    return event.detail.scrollHeight - event.detail.scrollTop - height < 48;
+}
+
+/******************************************************************************
+ * Function Name   : receiveScrolled
+ * Description     : Preserve the receive reader's position when scrolling through older fragments.
+ * Input Parameters: event
+ * Return Value    : None
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function receiveScrolled(event) { //20261110-7 add
+    receiveFollowing.value = followingBottom(event, receiveScroll.value);
+}
+
+/******************************************************************************
+ * Function Name   : sendScrolled
+ * Description     : Preserve the send reader's position independently of receive scrolling.
+ * Input Parameters: event
+ * Return Value    : None
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function sendScrolled(event) { //20261110-7 add
+    sendFollowing.value = followingBottom(event, sendScroll.value);
+}
+
+/******************************************************************************
+ * Function Name   : clearRecords
+ * Description     : Clear one display and return only its reader to following newly arriving records.
+ * Input Parameters: direction
+ * Return Value    : None
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function clearRecords(direction) { //20261110-7 add
+    application.clearWindow(direction);
+    if (direction === 'receive') {
+        receiveFollowing.value = true;
+    } else {
+        sendFollowing.value = true;
+    }
+}
 
 /******************************************************************************
  * Function Name   : observe
@@ -187,6 +282,15 @@ async function openSettings() { //20261110-1 add
     }
 }
 
-onMounted(application.start);
-onUnmounted(unsubscribe);
+onMounted(function mount() { //20261110-7 change - Native resize and browser visual viewport share the same layout path.
+    window.addEventListener('resize', updateViewport);
+    window.visualViewport?.addEventListener('resize', updateViewport);
+    updateViewport();
+    void application.start();
+});
+onUnmounted(function unmount() {
+    unsubscribe();
+    window.removeEventListener('resize', updateViewport);
+    window.visualViewport?.removeEventListener('resize', updateViewport);
+});
 </script>

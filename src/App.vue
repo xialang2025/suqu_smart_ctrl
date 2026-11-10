@@ -52,4 +52,31 @@ button { font: inherit; }
 /*20261110-4 add - Session boundaries must not look like received or transmitted bytes. */
 .session-marker { color: #617185; font-size: 12px; padding: 4px 0; text-align: center; }
 .control-heading { flex-wrap: wrap; flex: none; }
+/*20261110-7 add - Shrink record areas first, and retain scroll access on exceptionally short visible viewports. */
+uni-page-body { font-size: 16px; }
+.control-screen { gap: 8px; padding: 12px; overflow-y: auto; }
+.control-identity { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; flex: none; }
+.control-identity .device-name { font-size: 1em; }
+.control-identity .device-address { margin-top: 0; font-size: .8em; }
+.control-screen .notice { font-size: .8em; max-height: 3.2em; overflow-y: auto; }
+.control-screen .data-panel { min-height: 82px; padding: 10px; }
+.control-screen .send-panel { min-height: 184px; }
+.control-screen .section-title { font-size: 1.05em; }
+.control-heading .secondary { font-size: .85em; padding: 0 10px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; }
+.clear-button { background: #edf3f9; color: #155fa9; margin: 0; padding: 0 10px; line-height: 30px; font-size: .8em; border-radius: 6px; min-width: 52px; }
+.capacity-note { color: #98630c; font-size: .75em; flex: none; margin-top: 4px; }
+.record-bytes { font-size: .95em; }
+.record-meta { font-size: .75em; }
+.control-screen .hex-input { font-size: .9em; }
+.control-screen .data-scroll { margin-top: 6px; }
+@media (max-height: 540px) {
+    .control-screen { gap: 5px; padding: 8px; }
+    .control-screen .data-panel { min-height: 70px; padding: 6px 8px; }
+    .control-screen .send-panel { min-height: 164px; }
+    .control-screen .notice { max-height: 2.5em; }
+    .control-screen .hex-input { height: 46px; min-height: 46px; }
+    .send-input-row { margin-top: 6px; }
+    .control-heading { gap: 6px; }
+}
 </style>

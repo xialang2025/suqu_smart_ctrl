@@ -156,6 +156,52 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
             await page.locator('[data-device="AA:01"]').click();
             await page.locator('[data-page="control"]').waitFor();
             assert.ok(await page.getByText('00 FF', { exact: true }).isVisible());
+            if (control === 'windows') { //20261110-7 add - Drive records, independent clear and reduced visible height.
+                await page.locator('textarea').fill('AB');
+                await page.locator('[data-action="send"]').click();
+                await page.getByText('写入成功', { exact: true }).waitFor();
+                await page.evaluate(function continuousReceive() {
+                    for (let index = 0; index < 520; index++) {
+                        window.__suquEvent('notification', { ...window.__testConnection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [index >> 8, index & 255] });
+                    }
+                });
+                await page.getByText('已淘汰最旧 22 条显示记录', { exact: true }).waitFor({ timeout: 2000 });
+                assert.equal(await page.locator('[data-direction="receive"]').count(), 500);
+                assert.equal(await page.locator('[data-direction="receive"]').first().locator('.record-bytes').textContent(), '00 14');
+                assert.equal(await page.locator('[data-direction="receive"]').last().locator('.record-bytes').textContent(), '02 07');
+                await page.waitForFunction(function scrolledToLatest() {
+                    const view = document.querySelector('[data-window="receive"] .uni-scroll-view[style]');
+                    return view && view.scrollTop > 0;
+                }, null, { timeout: 2000 });
+                await page.evaluate(function readOlder() { document.querySelector('[data-window="receive"] .uni-scroll-view[style]').scrollTop = 0; });
+                await page.waitForFunction(function atTop() { return document.querySelector('[data-window="receive"] .uni-scroll-view[style]').scrollTop === 0; });
+                await page.evaluate(function nextFragment() { window.__suquEvent('notification', { ...window.__testConnection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [170] }); });
+                await page.locator('[data-direction="receive"]').last().getByText('AA', { exact: true }).waitFor();
+                assert.ok(await page.evaluate(function keptReading() { return document.querySelector('[data-window="receive"] .uni-scroll-view[style]').scrollTop < 10; }));
+                await page.locator('[data-action="clear-receive"]').click({ timeout: 2000 });
+                assert.equal(await page.locator('[data-direction="receive"]').count(), 0);
+                assert.equal(await page.locator('[data-direction="send"]').count(), 1);
+                await page.locator('[data-action="clear-send"]').click();
+                assert.equal(await page.locator('[data-direction="send"]').count(), 0);
+                assert.equal(await page.locator('textarea').inputValue(), 'AB');
+                assert.equal(await page.evaluate(function writes() { return window.__nativeRequests.filter(function write(p) { return p.method === 'write'; }).length; }), 1);
+                await page.setViewportSize({ width: 320, height: 640 });
+                await page.addStyleTag({ content: 'uni-page-body { font-size: 125%; }' });
+                for (const selector of ['[data-window="receive"]', '[data-window="send"]', '[data-action="send"]']) {
+                    const bounds = await page.locator(selector).boundingBox();
+                    assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 641, selector);
+                }
+                await page.screenshot({ path: path.join(root, 'artifacts/windows-small-font.png'), fullPage: true });
+                await page.setViewportSize({ width: 320, height: 380 });
+                await page.locator('textarea').fill('FF');
+                await page.locator('[data-action="send"]').click();
+                await page.getByText('写入成功', { exact: true }).waitFor();
+                assert.equal(await page.locator('[data-direction="send"]').count(), 1);
+                assert.deepEqual(await page.evaluate(function lastWrite() { return window.__nativeRequests.filter(function write(p) { return p.method === 'write'; }).at(-1).options.value; }), [255]);
+                assert.equal(await page.evaluate(function width() { return document.documentElement.scrollWidth <= innerWidth; }), true);
+                await page.screenshot({ path: path.join(root, 'artifacts/windows-keyboard-height.png'), fullPage: true });
+                return;
+            }
             if (control === 'lifecycle') {
                 await page.locator('textarea').fill('01');
                 await page.evaluate(function background() { window.__suquEvent('lifecycle', { foreground: false }); });
@@ -294,3 +340,16 @@ async function renderLifecycle() { //20261110-6 add
 }
 
 test('宿主前后台事件先禁发再核实，返回退出及冷启动不恢复旧通信', renderLifecycle);
+
+/******************************************************************************
+ * Function Name   : renderWindows
+ * Description     : Verify bounded records and usable manual sending at small screen and keyboard heights.
+ * Input Parameters: None
+ * Return Value    : Promise resolved after browser interactions.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function renderWindows() { //20261110-7 add
+    await renderDiscoveredCards(null, 'windows');
+}
+
+test('持续数据可淘汰和独立清空，小屏较大字体及键盘高度仍可输入发送', renderWindows);

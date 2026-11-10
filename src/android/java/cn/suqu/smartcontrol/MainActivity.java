@@ -25,6 +25,9 @@ import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Insets; //20261110-7 add
+import android.view.WindowInsets;
+import android.widget.FrameLayout;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -94,6 +97,7 @@ public final class MainActivity extends Activity {
         adapter = manager == null ? null : manager.getAdapter();
         web = new WebView(this);
         settings = web.getSettings();
+        settings.setTextZoom(Math.round(getResources().getConfiguration().fontScale * 100)); //20261110-7 add - Respect the Android user's selected font size.
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(false);
         settings.setAllowFileAccess(false);
@@ -107,12 +111,37 @@ public final class MainActivity extends Activity {
         } else {
             registerReceiver(adapterReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
         }
-        setContentView(web);
+        installContent(); //20261110-7 change - Give the WebView actual space outside system bars and the keyboard.
         if (Build.VERSION.SDK_INT >= 33) { //20261110-6 add - Handle gesture back on current Android versions.
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
                     android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::requestBack);
         }
         web.loadUrl(ORIGIN + "/index.html");
+    }
+
+    /******************************************************************************
+     * Function Name   : installContent
+     * Description     : Apply system and keyboard insets once at the native container boundary.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void installContent() { //20261110-7 add
+        FrameLayout container = new FrameLayout(this);
+
+        container.setBackgroundColor(Color.rgb(243, 246, 250));
+        container.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        if (Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            container.setOnApplyWindowInsetsListener((view, insets) -> {
+                Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
+                        | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
+
+                view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+                return WindowInsets.CONSUMED; // Avoid applying IME shrink a second time inside newer WebViews.
+            });
+        }
+        setContentView(container);
     }
 
     /******************************************************************************

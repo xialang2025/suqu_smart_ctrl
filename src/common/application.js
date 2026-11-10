@@ -14,8 +14,9 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         input: '', sent: [], sending: false, //20261110-3 add - Sending and receiving own separate visible records.
         wasReady: false, //20261110-4 add - A new target owns a fresh record history.
         foreground: true, //20261110-6 add - A visible ready state alone cannot authorize a background write.
+        recordLimit: 500, receivedDropped: 0, sentDropped: 0, //20261110-7 add - Each independent window has a fixed display budget.
     };
-    const app = { state, start, subscribe, scan, stopScan, connect, disconnect, cancelConnection, openControl, backToDevices, setInput, send };
+    const app = { state, start, subscribe, scan, stopScan, connect, disconnect, cancelConnection, openControl, backToDevices, setInput, send, clearWindow };
     let scanSequence = 0;
     let scanTimer = null;
     let connectionSequence = 0;
@@ -27,6 +28,47 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     let uncertainWrite = false;
     let exiting = false; //20261110-6 add - No late operation may reopen a terminating activity.
     let lifecycleSequence = 0;
+
+    /******************************************************************************
+     * Function Name   : appendRecord
+     * Description     : Keep the latest display records and report eviction outside the byte stream.
+     * Input Parameters: direction, record
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function appendRecord(direction, record) { //20261110-7 add
+        const records = direction === 'receive' ? state.received : state.sent;
+        const counter = direction === 'receive' ? 'receivedDropped' : 'sentDropped';
+        let removed;
+
+        records.push(record);
+        removed = Math.max(0, records.length - state.recordLimit);
+        if (removed) {
+            records.splice(0, removed);
+            state[counter] += removed;
+        }
+    }
+
+    /******************************************************************************
+     * Function Name   : clearWindow
+     * Description     : Clear only the chosen display history without changing transmission or input.
+     * Input Parameters: direction
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function clearWindow(direction) { //20261110-7 add
+        if (direction === 'receive') {
+            state.received = [];
+            state.receivedDropped = 0;
+            pendingNotifications = [];
+        } else if (direction === 'send') {
+            state.sent = [];
+            state.sentDropped = 0;
+        } else {
+            return;
+        }
+        publish();
+    }
 
     platform.on?.('back', onBack);
     platform.on?.('lifecycle', onLifecycle);
@@ -312,7 +354,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 void endConnection('写入结果未知，应用未自动重发，请手动重连');
             }
         }, 5000);
-        state.sent.push(record);
+        appendRecord('send', record); //20261110-7 change
         state.sending = true;
         publish();
         try {
@@ -392,9 +434,13 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         };
         if (state.status === 'connecting') {
             pendingNotifications.push(record);
+            if (pendingNotifications.length > state.recordLimit) { //20261110-7 add - Preparation cannot bypass the display memory budget.
+                pendingNotifications.shift();
+                state.receivedDropped++;
+            }
             return;
         }
-        state.received.push(record);
+        appendRecord('receive', record); //20261110-7 change
         publish();
     }
 
@@ -425,6 +471,8 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         if (state.currentDevice?.deviceId !== deviceId) { //20261110-4 add - Never present another device's bytes or pending input as this target.
             state.received = [];
             state.sent = [];
+            state.receivedDropped = 0; //20261110-7 add - Eviction belongs to the selected device history.
+            state.sentDropped = 0;
             state.input = '';
             state.wasReady = false;
         }
@@ -473,7 +521,9 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             if (reconnecting) {
                 appendReconnectMarker();
             }
-            state.received.push(...pendingNotifications);
+            for (const record of pendingNotifications) { //20261110-7 change - Flush without an unbounded spread argument list.
+                appendRecord('receive', record);
+            }
             pendingNotifications = [];
             state.wasReady = true;
             state.message = '设备已就绪，点击设备卡片进入控制页面';
@@ -546,8 +596,8 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     function appendReconnectMarker() { //20261110-4 add
         const time = new Date(clock.now ? clock.now() : Date.now()).toLocaleTimeString('zh-CN', { hour12: false });
 
-        state.received.push({ id: ++recordSequence, type: 'marker', time, text: '设备已重新连接' });
-        state.sent.push({ id: ++recordSequence, type: 'marker', time, text: '设备已重新连接' });
+        appendRecord('receive', { id: ++recordSequence, type: 'marker', time, text: '设备已重新连接' }); //20261110-7 change
+        appendRecord('send', { id: ++recordSequence, type: 'marker', time, text: '设备已重新连接' });
     }
 
     platform.on?.('deviceFound', onDeviceFound);
