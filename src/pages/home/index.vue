@@ -6,8 +6,8 @@
             <view class="section-title">设备页</view>
             <view class="notice" role="status">{{ state.message || '正在检查蓝牙状态…' }}</view>
             <view class="actions">
-                <button class="primary" data-action="scan" :disabled="['initializing', 'connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)" @click="toggleScan">{{ state.scanning ? '停止扫描' : '重新扫描' }}</button>
-                <button v-if="state.status === 'ready' || state.status === 'disconnect-error'" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
+                <button class="primary" data-action="scan" :disabled="['initializing', 'connecting', 'ready', 'checking', 'suspended', 'disconnecting', 'disconnect-error'].includes(state.status)" @click="toggleScan">{{ state.scanning ? '停止扫描' : '重新扫描' }}</button>
+                <button v-if="['ready', 'checking', 'suspended', 'disconnect-error'].includes(state.status)" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
                 <button v-if="state.status === 'connecting'" class="secondary" data-action="cancel" @click="application.cancelConnection">取消连接</button>
                 <button v-if="state.status === 'unavailable'" class="secondary" @click="openSettings">系统设置</button>
             </view>
@@ -16,14 +16,14 @@
             <view class="device-name">{{ device.name }}</view>
             <view class="device-address">{{ device.deviceId }}</view>
             <view class="device-meta">信号 {{ device.rssi }} dBm <text :class="{ ready: isReady(device) }">{{ deviceStatus(device) }}</text></view>
-            <button v-if="!isReady(device)" class="primary connect" :data-connect="device.deviceId" :disabled="['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)" @click.stop="application.connect(device.deviceId)">{{ state.currentDevice?.deviceId === device.deviceId && state.status === 'connecting' ? '连接中…' : '连接' }}</button>
+            <button v-if="!isReady(device)" class="primary connect" :data-connect="device.deviceId" :disabled="['connecting', 'ready', 'checking', 'suspended', 'disconnecting', 'disconnect-error'].includes(state.status)" @click.stop="application.connect(device.deviceId)">{{ state.currentDevice?.deviceId === device.deviceId && state.status === 'connecting' ? '连接中…' : '连接' }}</button>
         </view>
         <view v-if="!state.devices.length" class="empty">{{ state.scanning ? '正在寻找附近的蓝牙设备…' : '暂无设备' }}<br />请确认模块已开启</view>
     </view>
     <view v-else class="screen control-screen" data-page="control">
         <view class="control-heading">
             <button class="secondary" data-action="back" @click="application.backToDevices">返回设备页</button>
-            <button v-if="state.status === 'ready' || state.status === 'disconnect-error'" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
+            <button v-if="['ready', 'checking', 'suspended', 'disconnect-error'].includes(state.status)" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
             <button v-if="state.status === 'connecting'" class="secondary" data-action="cancel" @click="application.cancelConnection">取消连接</button>
             <button v-if="state.status === 'disconnected'" class="secondary" data-action="reconnect" @click="application.connect(state.currentDevice.deviceId)">重新连接</button>
             <text :class="{ ready: state.status === 'ready', failed: state.status !== 'ready' }">{{ connectionLabel() }}</text>
@@ -119,7 +119,7 @@ function deviceStatus(device) { //20261110-2 add
  * Date            : 2026.11.10
  ******************************************************************************/
 function connectionLabel() { //20261110-4 add
-    return { ready: '已就绪', connecting: '连接中', disconnecting: '断开中', 'disconnect-error': '断开未确认', disconnected: '已断开', unavailable: '蓝牙不可用' }[state.value.status] || '未就绪';
+    return { ready: '已就绪', checking: '核实中', suspended: '待核实', connecting: '连接中', disconnecting: '断开中', 'disconnect-error': '断开未确认', disconnected: '已断开', unavailable: '蓝牙不可用' }[state.value.status] || '未就绪';
 }
 
 /******************************************************************************

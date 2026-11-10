@@ -100,6 +100,10 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
                 const packet = JSON.parse(text);
 
                 window.__nativeRequests.push(packet);
+                if (packet.method === 'verify') { //20261110-6 add - Hold only the Android verification boundary.
+                    window.__heldVerify = packet;
+                    return;
+                }
                 if (packet.method === 'connect' && configuration.holdConnection && !window.__heldConnect) {
                     window.__heldConnect = packet;
                     return;
@@ -152,6 +156,27 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
             await page.locator('[data-device="AA:01"]').click();
             await page.locator('[data-page="control"]').waitFor();
             assert.ok(await page.getByText('00 FF', { exact: true }).isVisible());
+            if (control === 'lifecycle') {
+                await page.locator('textarea').fill('01');
+                await page.evaluate(function background() { window.__suquEvent('lifecycle', { foreground: false }); });
+                await page.waitForFunction(function blocked() { return document.querySelector('[data-action="send"]').getAttribute('disabled') === 'true'; });
+                assert.equal(await page.locator('[data-action="send"]').getAttribute('disabled'), 'true');
+                await page.evaluate(function foreground() { window.__suquEvent('lifecycle', { foreground: true }); });
+                await page.waitForFunction(function held() { return Boolean(window.__heldVerify); }, { timeout: 2000 });
+                assert.equal(await page.locator('[data-action="send"]').getAttribute('disabled'), 'true');
+                await page.evaluate(function verified() { window.__suquReply(window.__heldVerify.id, true, { ready: true }); });
+                await page.waitForFunction(function canSend() { return !document.querySelector('[data-action="send"]').hasAttribute('disabled'); });
+                await page.evaluate(function back() { window.__suquEvent('back', {}); });
+                await page.locator('[data-page="devices"]').waitFor();
+                assert.equal(await page.evaluate(function connects() { return window.__nativeRequests.filter(function connect(p) { return p.method === 'connect'; }).length; }), 1);
+                await page.evaluate(function backAgain() { window.__suquEvent('back', {}); });
+                await page.waitForFunction(function exited() { return window.__nativeRequests.some(function exit(p) { return p.method === 'exit'; }); });
+                await page.reload();
+                await page.locator('[data-page="devices"]').waitFor();
+                assert.equal(await page.evaluate(function connects() { return window.__nativeRequests.filter(function connect(p) { return p.method === 'connect'; }).length; }), 0);
+                assert.equal(await page.locator('[data-direction]').count(), 0);
+                return;
+            }
             if (control === 'session') {
                 await page.locator('textarea').fill('FF');
                 await page.locator('[data-action="send"]').click();
@@ -256,3 +281,16 @@ async function renderCancellation() {
 }
 
 test('取消按钮结束当前连接，手动重试后迟到旧回包不破坏就绪', renderCancellation);
+
+/******************************************************************************
+ * Function Name   : renderLifecycle
+ * Description     : Verify host lifecycle, back navigation and clean reload in the compiled app.
+ * Input Parameters: None
+ * Return Value    : Promise resolved after page assertions.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function renderLifecycle() { //20261110-6 add
+    await renderDiscoveredCards(null, 'lifecycle');
+}
+
+test('宿主前后台事件先禁发再核实，返回退出及冷启动不恢复旧通信', renderLifecycle);

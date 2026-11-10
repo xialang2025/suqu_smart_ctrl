@@ -80,6 +80,8 @@ export function createNativePlatform(transport, host = globalThis, clock = globa
         subscribe: function subscribe(options) { return call('subscribe', options); },
         disconnect: function disconnect(options) { return call('disconnect', options); },
         write: function write(options) { return call('write', options); }, //20261110-3 add
+        verify: function verify(options) { return call('verify', options); }, //20261110-6 add
+        exit: function exit() { return call('exit'); }, //20261110-6 add
         on: function on(name, callback) {
             const callbacks = listeners.get(name) || new Set();
 

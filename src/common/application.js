@@ -13,6 +13,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         currentDevice: null, connectionId: 0, target: null, mtu: 23, received: [],
         input: '', sent: [], sending: false, //20261110-3 add - Sending and receiving own separate visible records.
         wasReady: false, //20261110-4 add - A new target owns a fresh record history.
+        foreground: true, //20261110-6 add - A visible ready state alone cannot authorize a background write.
     };
     const app = { state, start, subscribe, scan, stopScan, connect, disconnect, cancelConnection, openControl, backToDevices, setInput, send };
     let scanSequence = 0;
@@ -24,6 +25,111 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     let pendingNotifications = []; //20261110-4 add - Preserve arrival order without placing new bytes before a reconnect boundary.
     let activePreparation = null; //20261110-5 add - Public cancellation must not wait for a lost native reply.
     let uncertainWrite = false;
+    let exiting = false; //20261110-6 add - No late operation may reopen a terminating activity.
+    let lifecycleSequence = 0;
+
+    platform.on?.('back', onBack);
+    platform.on?.('lifecycle', onLifecycle);
+    /******************************************************************************
+     * Function Name   : onLifecycle
+     * Description     : Suspend writes in background and revalidate the current link and subscription on return.
+     * Input Parameters: event
+     * Return Value    : Promise resolved after foreground verification or release.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    async function onLifecycle(event) { //20261110-6 add
+        let sequence;
+        const connectionId = state.connectionId;
+        let timer;
+        let result;
+
+        if (state.foreground === Boolean(event.foreground)) {
+            return;
+        }
+        sequence = ++lifecycleSequence;
+        state.foreground = Boolean(event.foreground);
+        if (exiting) {
+            return;
+        }
+        if (!state.foreground) {
+            if (state.status === 'connecting' || activeWrite) {
+                await endConnection('应用进入后台，连接已结束，请手动重连');
+            } else if (state.status === 'ready' || state.status === 'checking') {
+                state.status = 'suspended';
+                state.message = '应用在后台，回前台后核实连接';
+            } else if (state.scanning) {
+                await stopScan();
+            }
+            publish();
+            return;
+        }
+        if (state.status !== 'suspended' || !state.target) {
+            publish();
+            return;
+        }
+        state.status = 'checking';
+        state.message = '正在核实连接和接收准备…';
+        publish();
+        try {
+            result = await Promise.race([platform.verify({
+                deviceId: state.currentDevice.deviceId, connectionId,
+                serviceId: state.target.serviceId, characteristicId: state.target.receiveId,
+                sendId: state.target.sendId,
+            }), new Promise(function deadline(resolve, reject) {
+                timer = clock.setTimeout(function expire() { reject(new Error('前台连接核实超时')); }, 6000);
+            })]);
+            if (sequence !== lifecycleSequence || connectionId !== state.connectionId || state.status !== 'checking') {
+                return;
+            }
+            if (!result?.ready) {
+                throw new Error('原连接或接收准备已失效');
+            }
+            state.status = 'ready';
+            state.message = '连接和接收准备已核实；后台数据可能不完整';
+            publish();
+        } catch (error) {
+            if (sequence === lifecycleSequence && connectionId === state.connectionId && state.status === 'checking') {
+                await endConnection(error.message + '，请手动重连');
+            }
+        } finally {
+            clock.clearTimeout(timer);
+        }
+    }
+    /******************************************************************************
+     * Function Name   : onBack
+     * Description     : Navigate from control first, then revoke all communication before native exit.
+     * Input Parameters: None
+     * Return Value    : Promise resolved after requesting activity exit.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    async function onBack() { //20261110-6 add
+        if (exiting) {
+            return;
+        }
+        if (state.page === 'control') {
+            backToDevices();
+            return;
+        }
+        exiting = true;
+        lifecycleSequence++;
+        finishPreparation();
+        abandonWrite();
+        scanSequence++;
+        clock.clearTimeout(scanTimer);
+        state.connectionId = ++connectionSequence;
+        state.scanning = false;
+        state.target = null;
+        state.status = 'exiting';
+        publish();
+        try {
+            await platform.exit(); // The host releases GATT and scanning even when page callbacks stop.
+        } catch (error) {
+            state.message = '退出未完成，请再次按返回键';
+            exiting = false;
+            state.status = 'disconnected';
+            publish();
+        }
+    }
 
     /******************************************************************************
      * Function Name   : deliveryNotice
@@ -112,6 +218,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             return;
         }
         disconnectLease = lease;
+        lifecycleSequence++; //20261110-6 add - A foreground check cannot restore a deliberately ended session.
         finishPreparation();
         scanSequence++;
         clock.clearTimeout(scanTimer);
@@ -169,7 +276,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         let operation;
         let stopped;
 
-        if (state.status !== 'ready' || !state.target || !state.currentDevice) {
+        if (!state.foreground || state.status !== 'ready' || !state.target || !state.currentDevice) {
             state.message = '设备未就绪或已断开，不能发送';
             publish();
             return;
@@ -310,7 +417,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         let preparation;
         let stopped;
 
-        if (!device || !state.available || disconnectLease || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
+        if (exiting || !state.foreground || !device || !state.available || disconnectLease || ['connecting', 'ready', 'checking', 'suspended', 'disconnecting', 'disconnect-error'].includes(state.status)) {
             return;
         }
         reconnecting = state.currentDevice?.deviceId === deviceId && state.wasReady;
@@ -521,7 +628,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function scan() { //20261110-1 add
         const scanId = ++scanSequence;
 
-        if (!state.available || disconnectLease || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
+        if (exiting || !state.foreground || !state.available || disconnectLease || ['connecting', 'ready', 'checking', 'suspended', 'disconnecting', 'disconnect-error'].includes(state.status)) {
             return;
         }
         clock.clearTimeout(scanTimer);
@@ -605,7 +712,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function start() {
         let result;
 
-        if (disconnectLease || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) { //20261110-5 change - A system event cannot bypass pending native release.
+        if (exiting || !state.foreground || disconnectLease || ['initializing', 'connecting', 'ready', 'checking', 'suspended', 'disconnecting', 'disconnect-error'].includes(state.status)) { //20261110-6 change - A terminating activity cannot restart communication.
             return;
         }
         state.page = 'devices';
@@ -613,6 +720,9 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         publish();
         try {
             result = await platform.initialize();
+            if (exiting) { //20261110-6 add - Permission dialogs may complete after explicit activity exit.
+                return;
+            }
             state.available = Boolean(result.available);
             state.status = result.available ? 'idle' : 'unavailable';
             state.message = result.message || (result.available ? '蓝牙已开启' : '蓝牙不可用');
@@ -620,6 +730,9 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 await scan();
             }
         } catch (error) {
+            if (exiting) {
+                return;
+            }
             state.status = 'unavailable';
             state.available = false;
             state.scanning = false;

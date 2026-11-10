@@ -71,6 +71,9 @@ public final class MainActivity extends Activity {
     private int pendingWrite;
     private UUID pendingWriteUuid;
     private Runnable writeDeadline;
+    //20261110-6 add - Native gates cover queued page commands while lifecycle events cross the bridge.
+    private boolean foreground;
+    private boolean receiveReady;
 
     /******************************************************************************
      * Function Name   : onCreate
@@ -105,6 +108,10 @@ public final class MainActivity extends Activity {
             registerReceiver(adapterReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
         }
         setContentView(web);
+        if (Build.VERSION.SDK_INT >= 33) { //20261110-6 add - Handle gesture back on current Android versions.
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, this::requestBack);
+        }
         web.loadUrl(ORIGIN + "/index.html");
     }
 
@@ -174,6 +181,13 @@ public final class MainActivity extends Activity {
                 subscribeDevice(id, options);
             } else if ("write".equals(method)) {
                 writeDevice(id, options);
+            } else if ("verify".equals(method)) { //20261110-6 add
+                verifyConnection(id, options);
+            } else if ("exit".equals(method)) {
+                stopDiscovery();
+                closeConnection("应用已退出", false);
+                reply(id, true, object());
+                finishAndRemoveTask();
             } else if ("disconnect".equals(method)) {
                 if (options.optInt("connectionId") == activeConnectionId) {
                     closeConnection("连接已结束", false);
@@ -350,7 +364,7 @@ public final class MainActivity extends Activity {
      * Date            : 2026.11.10
      ******************************************************************************/
     private void startDiscovery(int id, int scanId) { //20261110-1 add
-        if (!permissionsGranted()) {
+        if (!foreground || !permissionsGranted()) { //20261110-6 change - Delayed page requests cannot start background scanning.
             reply(id, false, object("message", "蓝牙权限不足，请重新检查权限"));
             return;
         }
@@ -484,7 +498,7 @@ public final class MainActivity extends Activity {
         String deviceId = options.optString("deviceId");
         int connectionId = options.optInt("connectionId");
 
-        if (gatt != null || !permissionsGranted() || adapter == null || !adapter.isEnabled()) {
+        if (!foreground || gatt != null || !permissionsGranted() || adapter == null || !adapter.isEnabled()) { //20261110-6 change
             reply(id, false, object("message", gatt != null ? "请先断开当前设备" : "蓝牙条件不足，请重新检查"));
             return;
         }
@@ -599,7 +613,8 @@ public final class MainActivity extends Activity {
                             request = pendingSubscribe;
                             pendingSubscribe = 0;
                             handler.removeCallbacks(subscribeDeadline);
-                            reply(request, status == BluetoothGatt.GATT_SUCCESS, object("message", status == BluetoothGatt.GATT_SUCCESS ? "接收已准备" : "接收通知开启失败"));
+                            receiveReady = foreground && status == BluetoothGatt.GATT_SUCCESS; //20261110-6 change - A background descriptor reply cannot authorize a write.
+                            reply(request, receiveReady, object("ready", receiveReady, "message", receiveReady ? "接收已准备" : "接收通知开启失败"));
                         });
                     }
                     /******************************************************************************
@@ -738,7 +753,7 @@ public final class MainActivity extends Activity {
         byte[] value;
         BluetoothGatt source = gatt;
 
-        if (characteristic == null || pendingSubscribe != 0) {
+        if (!foreground || characteristic == null || pendingSubscribe != 0) { //20261110-6 change
             reply(id, false, object("message", "接收通道不可用"));
             return;
         }
@@ -750,6 +765,7 @@ public final class MainActivity extends Activity {
         value = (characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
                 ? BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE : BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
         pendingSubscribe = id;
+        receiveReady = false;
         subscribeDeadline = () -> {
             if (gatt == source && pendingSubscribe == id) {
                 closeConnection("接收通知准备超时", true);
@@ -807,6 +823,7 @@ public final class MainActivity extends Activity {
         int writing = pendingWrite;
 
         gatt = null;
+        receiveReady = false; //20261110-6 add
         activeConnectionId = 0;
         pendingConnect = 0;
         pendingSubscribe = 0;
@@ -865,7 +882,7 @@ public final class MainActivity extends Activity {
         int mode;
         boolean accepted;
 
-        if (characteristic == null || pendingConnect != 0 || pendingSubscribe != 0 || pendingWrite != 0) {
+        if (!foreground || !receiveReady || characteristic == null || pendingConnect != 0 || pendingSubscribe != 0 || pendingWrite != 0) { //20261110-6 change
             reply(id, false, object("code", "rejected", "message", "设备未就绪或正在处理写入"));
             return;
         }
@@ -926,6 +943,100 @@ public final class MainActivity extends Activity {
             }
         };
         handler.postDelayed(writeDeadline, 5000);
+    }
+
+    /******************************************************************************
+     * Function Name   : verifyConnection
+     * Description     : Check the operating-system link and renew the receive subscription before enabling writes.
+     * Input Parameters: id, options
+     * Return Value    : None; completes with the descriptor callback.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void verifyConnection(int id, JSONObject options) { //20261110-6 add
+        BluetoothManager manager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        BluetoothGattCharacteristic receive = receiveCharacteristic(options);
+        BluetoothGattService service;
+        BluetoothGattCharacteristic send;
+
+        if (!foreground || !permissionsGranted() || adapter == null || !adapter.isEnabled()
+                || gatt == null || manager == null || receive == null || pendingConnect != 0 || pendingWrite != 0
+                || manager.getConnectionState(gatt.getDevice(), BluetoothProfile.GATT) != BluetoothProfile.STATE_CONNECTED) {
+            reply(id, false, object("message", "原连接已失效"));
+            return;
+        }
+        service = receive.getService();
+        send = service.getCharacteristic(profileUuid(options.optString("sendId")));
+        if (send == null || (send.getProperties() & (BluetoothGattCharacteristic.PROPERTY_WRITE
+                | BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) == 0
+                || (receive.getProperties() & (BluetoothGattCharacteristic.PROPERTY_NOTIFY
+                | BluetoothGattCharacteristic.PROPERTY_INDICATE)) == 0) {
+            reply(id, false, object("message", "收发通道已失效"));
+            return;
+        }
+        subscribeDevice(id, options);
+    }
+
+    /******************************************************************************
+     * Function Name   : requestBack
+     * Description     : Ask the application to navigate or exit, with cleanup if the page is not loaded.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void requestBack() { //20261110-6 add
+        if (web == null) {
+            finishAndRemoveTask();
+            return;
+        }
+        web.evaluateJavascript("window.__suquEvent ? (window.__suquEvent('back', {}), true) : false", value -> {
+            if (!"true".equals(value)) {
+                stopDiscovery();
+                closeConnection("应用已退出", false);
+                finishAndRemoveTask();
+            }
+        });
+    }
+
+    /******************************************************************************
+     * Function Name   : onBackPressed
+     * Description     : Route legacy hardware back through the same application navigation.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    @Override
+    public void onBackPressed() { //20261110-6 add
+        requestBack();
+    }
+
+    /******************************************************************************
+     * Function Name   : onPause
+     * Description     : Block native writes before notifying the page of background entry.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    @Override
+    protected void onPause() { //20261110-6 add
+        foreground = false;
+        receiveReady = false;
+        stopDiscovery();
+        emit("lifecycle", object("foreground", false));
+        super.onPause();
+    }
+
+    /******************************************************************************
+     * Function Name   : onResume
+     * Description     : Reenter foreground without automatically trusting the previous receive subscription.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    @Override
+    protected void onResume() { //20261110-6 add
+        super.onResume();
+        foreground = true;
+        emit("lifecycle", object("foreground", true));
     }
 
     private final class NativeBridge {
