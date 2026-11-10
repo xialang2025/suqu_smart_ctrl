@@ -94,12 +94,16 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
     try {
         browser = await chromium.launch({ channel: 'msedge', headless: true });
         page = await browser.newPage({ viewport: { width: 390, height: 844 } });
-        await page.addInitScript(function installSystemBoundary() {
+        await page.addInitScript(function installSystemBoundary(configuration) {
             window.__nativeRequests = [];
             window.NativeBle = { postMessage: function postMessage(text) {
                 const packet = JSON.parse(text);
 
                 window.__nativeRequests.push(packet);
+                if (packet.method === 'connect' && configuration.holdConnection && !window.__heldConnect) {
+                    window.__heldConnect = packet;
+                    return;
+                }
                 queueMicrotask(function reply() {
                     const services = [{ uuid: '0000ffe0-0000-1000-8000-00805f9b34fb', characteristics: [
                         { uuid: '0000ffe1-0000-1000-8000-00805f9b34fb', properties: { write: true } },
@@ -124,13 +128,25 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
                     }
                 });
             } };
-        });
+        }, { holdConnection: control === 'cancel' });
         await page.goto('http://127.0.0.1:' + server.address().port);
         await page.locator('[data-device="AA:01"]').waitFor({ timeout: 2000 });
         assert.equal(await page.locator('[data-device]').count(), 2);
         assert.ok(await page.getByText('未命名设备', { exact: true }).isVisible());
         if (control) {
             await page.locator('[data-connect="AA:01"]').click({ timeout: 2000 });
+            if (control === 'cancel') {
+                await page.waitForFunction(function held() { return Boolean(window.__heldConnect); });
+                await page.locator('[data-action="cancel"]').click({ timeout: 2000 });
+                await page.getByText('已取消连接', { exact: true }).waitFor();
+                await page.locator('[data-connect="AA:01"]').click();
+                await page.getByText('已就绪', { exact: true }).waitFor();
+                await page.evaluate(function lateOldReply() { window.__suquReply(window.__heldConnect.id, true, { mtu: 23, services: [] }); });
+                assert.ok(await page.getByText('已就绪', { exact: true }).isVisible());
+                assert.ok(await page.locator('[data-page="devices"]').isVisible());
+                await page.screenshot({ path: path.join(root, 'artifacts/cancel-retry.png'), fullPage: true });
+                return;
+            }
             await page.getByText('已就绪', { exact: true }).waitFor();
             assert.ok(await page.locator('[data-page="devices"]').isVisible());
             await page.locator('[data-device="AA:01"]').click();
@@ -227,3 +243,16 @@ async function renderSessionSwitch() {
 }
 
 test('两页可断开，同设备重连有标记，另一设备不显示旧内容', renderSessionSwitch);
+
+/******************************************************************************
+ * Function Name   : renderCancellation
+ * Description     : Cancel a real page request and keep the next manual attempt ready after a stale reply.
+ * Input Parameters: None
+ * Return Value    : Promise resolved after browser assertions.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function renderCancellation() {
+    await renderDiscoveredCards(null, 'cancel');
+}
+
+test('取消按钮结束当前连接，手动重试后迟到旧回包不破坏就绪', renderCancellation);

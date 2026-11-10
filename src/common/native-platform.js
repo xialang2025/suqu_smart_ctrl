@@ -53,7 +53,7 @@ export function createNativePlatform(transport, host = globalThis, clock = globa
             }
             timer = clock.setTimeout(function expire() {
                 receiveReply(id, false, { code: 'timeout', message: '蓝牙操作等待超时' });
-            }, 15000);
+            }, method === 'connect' ? 25000 : 15000); //20261110-5 change - The application owns the earlier 20-second readiness deadline.
             pending.set(id, { resolve, reject, timer });
             try {
                 transport.postMessage(JSON.stringify({ id, method, options }));

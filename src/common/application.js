@@ -14,7 +14,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         input: '', sent: [], sending: false, //20261110-3 add - Sending and receiving own separate visible records.
         wasReady: false, //20261110-4 add - A new target owns a fresh record history.
     };
-    const app = { state, start, subscribe, scan, stopScan, connect, disconnect, openControl, backToDevices, setInput, send };
+    const app = { state, start, subscribe, scan, stopScan, connect, disconnect, cancelConnection, openControl, backToDevices, setInput, send };
     let scanSequence = 0;
     let scanTimer = null;
     let connectionSequence = 0;
@@ -22,6 +22,50 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     let disconnectLease = null;
     let activeWrite = null; //20261110-4 add - A late result can settle only its own visible operation.
     let pendingNotifications = []; //20261110-4 add - Preserve arrival order without placing new bytes before a reconnect boundary.
+    let activePreparation = null; //20261110-5 add - Public cancellation must not wait for a lost native reply.
+    let uncertainWrite = false;
+
+    /******************************************************************************
+     * Function Name   : deliveryNotice
+     * Description     : Preserve an uncertain-delivery warning across consecutive system loss events.
+     * Input Parameters: message
+     * Return Value    : Localized notice with the delivery limitation when needed.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function deliveryNotice(message) { //20261110-5 add
+        return uncertainWrite && !message.includes('未自动重发') ? message + '；未完成写入结果未知，应用未自动重发' : message;
+    }
+
+    /******************************************************************************
+     * Function Name   : finishPreparation
+     * Description     : End the current readiness wait without waiting on its obsolete native callback.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function finishPreparation() { //20261110-5 add
+        const preparation = activePreparation;
+
+        if (preparation) {
+            activePreparation = null;
+            clock.clearTimeout(preparation.deadline);
+            preparation.finish(preparation);
+        }
+    }
+
+    /******************************************************************************
+     * Function Name   : cancelConnection
+     * Description     : End the currently preparing device only after an explicit user cancellation.
+     * Input Parameters: None
+     * Return Value    : Promise resolved after native release.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    async function cancelConnection() { //20261110-5 add
+        if (state.status !== 'connecting') {
+            return;
+        }
+        await endConnection('已取消连接');
+    }
 
     /******************************************************************************
      * Function Name   : abandonWrite
@@ -32,8 +76,11 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
      ******************************************************************************/
     function abandonWrite() { //20261110-4 add
         if (activeWrite) {
+            uncertainWrite = true;
+            clock.clearTimeout(activeWrite.timer);
             activeWrite.record.status = 'unknown';
             activeWrite.settled = true;
+            activeWrite.finish?.(); //20261110-5 add - A lost reply must not leave the public send promise pending.
             activeWrite = null;
         }
         state.sending = false;
@@ -47,6 +94,17 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
      * Date            : 2026.11.10
      ******************************************************************************/
     async function disconnect() { //20261110-4 add
+        await endConnection('已主动断开连接');
+    }
+
+    /******************************************************************************
+     * Function Name   : endConnection
+     * Description     : Share native release and ownership checks for disconnect, cancellation and expiry.
+     * Input Parameters: message
+     * Return Value    : Promise resolved after the release outcome.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    async function endConnection(message) { //20261110-5 add
         const lease = disconnectLease || { deviceId: state.currentDevice?.deviceId, connectionId: state.connectionId };
         let operation;
 
@@ -54,6 +112,10 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             return;
         }
         disconnectLease = lease;
+        finishPreparation();
+        scanSequence++;
+        clock.clearTimeout(scanTimer);
+        state.scanning = false;
         abandonWrite();
         pendingNotifications = [];
         operation = ++connectionSequence;
@@ -69,7 +131,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             }
             disconnectLease = null;
             state.status = state.available ? 'disconnected' : 'unavailable';
-            state.message = '已主动断开连接';
+            state.message = deliveryNotice(message);
         } catch (error) {
             if (state.connectionId !== operation) { //20261110-4 add - Ignore a cleanup failure after ownership has moved on.
                 return;
@@ -105,6 +167,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         let bytes;
         let record;
         let operation;
+        let stopped;
 
         if (state.status !== 'ready' || !state.target || !state.currentDevice) {
             state.message = '设备未就绪或已断开，不能发送';
@@ -133,17 +196,24 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             text: bytes.map(function hex(value) { return value.toString(16).padStart(2, '0').toUpperCase(); }).join(' '),
         };
 
-        operation = { record, connectionId: state.connectionId, settled: false };
+        operation = { record, connectionId: state.connectionId, settled: false, timer: null, finish: null };
+        uncertainWrite = false;
+        stopped = new Promise(function stop(resolve) { operation.finish = resolve; });
         activeWrite = operation;
+        operation.timer = clock.setTimeout(function expireWrite() { //20261110-5 add - Retire the uncertain native client before another manual operation.
+            if (activeWrite === operation && !operation.settled) {
+                void endConnection('写入结果未知，应用未自动重发，请手动重连');
+            }
+        }, 5000);
         state.sent.push(record);
         state.sending = true;
         publish();
         try {
-            await platform.write({
+            await Promise.race([platform.write({
                 deviceId: state.currentDevice.deviceId, connectionId: state.connectionId,
                 serviceId: state.target.serviceId, characteristicId: state.target.sendId,
                 writeNoResponse: state.target.writeNoResponse, value: bytes,
-            });
+            }), stopped]);
             if (activeWrite === operation && !operation.settled) { //20261110-4 change - Ignore results from an ended device session.
                 record.status = 'success';
                 state.message = '写入成功；写入结果不代表设备已执行';
@@ -151,10 +221,15 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         } catch (error) {
             if (activeWrite === operation && !operation.settled) {
                 record.status = ['timeout', 'unknown', 'connection'].includes(error.code) ? 'unknown' : 'failed';
+                uncertainWrite = record.status === 'unknown';
                 state.message = record.status === 'unknown' ? '结果未知，应用未自动重发；' + error.message : error.message || '写入失败';
+                if (uncertainWrite) { //20261110-5 add - Never reuse a native client whose outstanding delivery is uncertain.
+                    await endConnection(state.message + '；请手动重连');
+                }
             }
         }
         if (activeWrite === operation) {
+            clock.clearTimeout(operation.timer);
             operation.settled = true;
             activeWrite = null;
             state.sending = false;
@@ -179,9 +254,10 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         }
         abandonWrite();
         pendingNotifications = [];
+        finishPreparation();
         state.status = state.available ? 'disconnected' : 'unavailable';
         state.target = null;
-        state.message = event.message || '设备连接已断开，请手动重连';
+        state.message = deliveryNotice(event.message || '设备连接已断开，请手动重连');
         publish();
     }
 
@@ -230,11 +306,15 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         let send;
         let receive;
         let reconnecting;
+        let deadline;
+        let preparation;
+        let stopped;
 
-        if (!device || !state.available || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
+        if (!device || !state.available || disconnectLease || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
             return;
         }
         reconnecting = state.currentDevice?.deviceId === deviceId && state.wasReady;
+        uncertainWrite = false;
         if (state.currentDevice?.deviceId !== deviceId) { //20261110-4 add - Never present another device's bytes or pending input as this target.
             state.received = [];
             state.sent = [];
@@ -246,12 +326,25 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         state.connectionId = connectionId;
         state.currentDevice = { ...device };
         state.status = 'connecting';
-        await stopScan();
-        state.message = '正在连接并准备接收…';
-        publish();
-        try {
-            result = await platform.connect({ deviceId, connectionId });
+        preparation = { connectionId, deadline: null, finish: null };
+        stopped = new Promise(function stop(resolve) { preparation.finish = resolve; });
+        activePreparation = preparation;
+        deadline = clock.setTimeout(function expirePreparation() { //20261110-5 change - One release path preserves the ending reason and identity.
             if (state.connectionId !== connectionId || state.status !== 'connecting') {
+                return;
+            }
+            void endConnection('连接准备超时，请重试');
+        }, 20000);
+        preparation.deadline = deadline;
+        try {
+            result = await Promise.race([stopScan(), stopped]);
+            if (result === preparation || state.connectionId !== connectionId || state.status !== 'connecting') {
+                return;
+            }
+            state.message = '正在连接并准备接收…';
+            publish();
+            result = await Promise.race([platform.connect({ deviceId, connectionId }), stopped]);
+            if (result === preparation || state.connectionId !== connectionId || state.status !== 'connecting') {
                 return;
             }
             state.mtu = Number.isInteger(result.mtu) && result.mtu >= 23 && result.mtu <= 517 ? result.mtu : 23; //20261110-3 change - Use a validated negotiated capacity.
@@ -265,8 +358,8 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 serviceId: service.uuid, sendId: send.uuid, receiveId: receive.uuid,
                 writeNoResponse: !send.properties.write && Boolean(send.properties.writeNoResponse),
             };
-            await platform.subscribe({ deviceId, connectionId, serviceId: service.uuid, characteristicId: receive.uuid });
-            if (state.connectionId !== connectionId || state.status !== 'connecting') {
+            result = await Promise.race([platform.subscribe({ deviceId, connectionId, serviceId: service.uuid, characteristicId: receive.uuid }), stopped]);
+            if (result === preparation || state.connectionId !== connectionId || state.status !== 'connecting') {
                 return;
             }
             state.status = 'ready';
@@ -278,17 +371,14 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             state.wasReady = true;
             state.message = '设备已就绪，点击设备卡片进入控制页面';
         } catch (error) {
-            if (state.connectionId !== connectionId) { //20261110-4 add - An older failure cannot revoke a newer device's preparation.
+            if (state.connectionId !== connectionId || state.status !== 'connecting') { //20261110-5 change - An ended readiness wait cannot re-enter cleanup.
                 return;
             }
-            state.status = 'disconnected';
-            state.target = null;
-            pendingNotifications = [];
-            state.message = error.message || '连接准备失败，请重试';
-            try {
-                await platform.disconnect({ deviceId, connectionId });
-            } catch (cleanupError) {
-                state.message += '；请重新检查蓝牙状态';
+            await endConnection(error.message || '连接准备失败，请重试'); //20261110-5 change - Failed preparation retains the same release protection as cancellation.
+        } finally {
+            clock.clearTimeout(deadline);
+            if (activePreparation === preparation) {
+                activePreparation = null;
             }
         }
         publish();
@@ -384,6 +474,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
      ******************************************************************************/
     function onAdapterState(event) { //20261110-1 add
         if (!event.available) {
+            finishPreparation();
             abandonWrite();
             pendingNotifications = [];
             state.available = false;
@@ -392,7 +483,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             clock.clearTimeout(scanTimer);
             state.scanning = false;
             state.status = 'unavailable';
-            state.message = event.message || '系统蓝牙已关闭，请开启后重新检查';
+            state.message = deliveryNotice(event.message || '系统蓝牙已关闭，请开启后重新检查');
             publish();
         }
     }
@@ -430,7 +521,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function scan() { //20261110-1 add
         const scanId = ++scanSequence;
 
-        if (!state.available || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
+        if (!state.available || disconnectLease || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
             return;
         }
         clock.clearTimeout(scanTimer);
@@ -514,7 +605,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function start() {
         let result;
 
-        if (['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) { //20261110-4 change - Keep cleanup eligibility separate from discovery.
+        if (disconnectLease || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) { //20261110-5 change - A system event cannot bypass pending native release.
             return;
         }
         state.page = 'devices';

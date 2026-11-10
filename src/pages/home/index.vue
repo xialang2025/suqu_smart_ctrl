@@ -8,6 +8,7 @@
             <view class="actions">
                 <button class="primary" data-action="scan" :disabled="['initializing', 'connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)" @click="toggleScan">{{ state.scanning ? '停止扫描' : '重新扫描' }}</button>
                 <button v-if="state.status === 'ready' || state.status === 'disconnect-error'" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
+                <button v-if="state.status === 'connecting'" class="secondary" data-action="cancel" @click="application.cancelConnection">取消连接</button>
                 <button v-if="state.status === 'unavailable'" class="secondary" @click="openSettings">系统设置</button>
             </view>
         </view>
@@ -23,6 +24,7 @@
         <view class="control-heading">
             <button class="secondary" data-action="back" @click="application.backToDevices">返回设备页</button>
             <button v-if="state.status === 'ready' || state.status === 'disconnect-error'" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
+            <button v-if="state.status === 'connecting'" class="secondary" data-action="cancel" @click="application.cancelConnection">取消连接</button>
             <button v-if="state.status === 'disconnected'" class="secondary" data-action="reconnect" @click="application.connect(state.currentDevice.deviceId)">重新连接</button>
             <text :class="{ ready: state.status === 'ready', failed: state.status !== 'ready' }">{{ connectionLabel() }}</text>
         </view>
