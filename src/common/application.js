@@ -12,12 +12,73 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         page: 'devices', status: 'idle', message: '', devices: [], scanning: false, available: false,
         currentDevice: null, connectionId: 0, target: null, mtu: 23, received: [],
         input: '', sent: [], sending: false, //20261110-3 add - Sending and receiving own separate visible records.
+        wasReady: false, //20261110-4 add - A new target owns a fresh record history.
     };
-    const app = { state, start, subscribe, scan, stopScan, connect, openControl, backToDevices, setInput, send };
+    const app = { state, start, subscribe, scan, stopScan, connect, disconnect, openControl, backToDevices, setInput, send };
     let scanSequence = 0;
     let scanTimer = null;
     let connectionSequence = 0;
     let recordSequence = 0;
+    let disconnectLease = null;
+    let activeWrite = null; //20261110-4 add - A late result can settle only its own visible operation.
+    let pendingNotifications = []; //20261110-4 add - Preserve arrival order without placing new bytes before a reconnect boundary.
+
+    /******************************************************************************
+     * Function Name   : abandonWrite
+     * Description     : End uncertain delivery once when its device session loses eligibility.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function abandonWrite() { //20261110-4 add
+        if (activeWrite) {
+            activeWrite.record.status = 'unknown';
+            activeWrite.settled = true;
+            activeWrite = null;
+        }
+        state.sending = false;
+    }
+
+    /******************************************************************************
+     * Function Name   : disconnect
+     * Description     : Revoke eligibility before releasing the selected native connection.
+     * Input Parameters: None
+     * Return Value    : Promise resolved after the release outcome.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    async function disconnect() { //20261110-4 add
+        const lease = disconnectLease || { deviceId: state.currentDevice?.deviceId, connectionId: state.connectionId };
+        let operation;
+
+        if (!lease.deviceId || state.status === 'disconnecting') {
+            return;
+        }
+        disconnectLease = lease;
+        abandonWrite();
+        pendingNotifications = [];
+        operation = ++connectionSequence;
+        state.connectionId = operation;
+        state.status = 'disconnecting';
+        state.target = null;
+        state.message = '正在断开设备…';
+        publish();
+        try {
+            await platform.disconnect(lease);
+            if (state.connectionId !== operation) {
+                return;
+            }
+            disconnectLease = null;
+            state.status = state.available ? 'disconnected' : 'unavailable';
+            state.message = '已主动断开连接';
+        } catch (error) {
+            if (state.connectionId !== operation) { //20261110-4 add - Ignore a cleanup failure after ownership has moved on.
+                return;
+            }
+            state.status = 'disconnect-error';
+            state.message = '断开未确认，请重试断开；' + error.message;
+        }
+        publish();
+    }
 
     /******************************************************************************
      * Function Name   : setInput
@@ -43,6 +104,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         const maximum = Math.min(512, Math.max(0, state.mtu - 3));
         let bytes;
         let record;
+        let operation;
 
         if (state.status !== 'ready' || !state.target || !state.currentDevice) {
             state.message = '设备未就绪或已断开，不能发送';
@@ -71,6 +133,8 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             text: bytes.map(function hex(value) { return value.toString(16).padStart(2, '0').toUpperCase(); }).join(' '),
         };
 
+        operation = { record, connectionId: state.connectionId, settled: false };
+        activeWrite = operation;
         state.sent.push(record);
         state.sending = true;
         publish();
@@ -80,14 +144,22 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 serviceId: state.target.serviceId, characteristicId: state.target.sendId,
                 writeNoResponse: state.target.writeNoResponse, value: bytes,
             });
-            record.status = 'success';
-            state.message = '写入成功；写入结果不代表设备已执行';
+            if (activeWrite === operation && !operation.settled) { //20261110-4 change - Ignore results from an ended device session.
+                record.status = 'success';
+                state.message = '写入成功；写入结果不代表设备已执行';
+            }
         } catch (error) {
-            record.status = ['timeout', 'unknown', 'connection'].includes(error.code) ? 'unknown' : 'failed';
-            state.message = record.status === 'unknown' ? '结果未知，应用未自动重发；' + error.message : error.message || '写入失败';
+            if (activeWrite === operation && !operation.settled) {
+                record.status = ['timeout', 'unknown', 'connection'].includes(error.code) ? 'unknown' : 'failed';
+                state.message = record.status === 'unknown' ? '结果未知，应用未自动重发；' + error.message : error.message || '写入失败';
+            }
         }
-        state.sending = false;
-        publish();
+        if (activeWrite === operation) {
+            operation.settled = true;
+            activeWrite = null;
+            state.sending = false;
+            publish();
+        }
     }
 
     platform.on?.('notification', onNotification);
@@ -105,6 +177,8 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 || String(event.deviceId).toUpperCase() !== state.currentDevice?.deviceId) {
             return;
         }
+        abandonWrite();
+        pendingNotifications = [];
         state.status = state.available ? 'disconnected' : 'unavailable';
         state.target = null;
         state.message = event.message || '设备连接已断开，请手动重连';
@@ -121,6 +195,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     function onNotification(event) { //20261110-2 add
         const bytes = Array.from(new Uint8Array(event.value || []));
         const time = new Date(clock.now ? clock.now() : Date.now()).toLocaleTimeString('zh-CN', { hour12: false });
+        let record;
 
         if (!state.target || event.connectionId !== state.connectionId
                 || String(event.deviceId).toUpperCase() !== state.currentDevice?.deviceId
@@ -128,10 +203,15 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 || !matchesUuid(event.characteristicId, state.target.receiveId)) {
             return;
         }
-        state.received.push({
+        record = {
             id: ++recordSequence, type: 'data', time, length: bytes.length,
             text: bytes.map(function hex(value) { return value.toString(16).padStart(2, '0').toUpperCase(); }).join(' '),
-        });
+        };
+        if (state.status === 'connecting') {
+            pendingNotifications.push(record);
+            return;
+        }
+        state.received.push(record);
         publish();
     }
 
@@ -149,11 +229,20 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
         let service;
         let send;
         let receive;
+        let reconnecting;
 
-        if (!device || !state.available || state.status === 'connecting' || state.status === 'ready') {
+        if (!device || !state.available || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
             return;
         }
+        reconnecting = state.currentDevice?.deviceId === deviceId && state.wasReady;
+        if (state.currentDevice?.deviceId !== deviceId) { //20261110-4 add - Never present another device's bytes or pending input as this target.
+            state.received = [];
+            state.sent = [];
+            state.input = '';
+            state.wasReady = false;
+        }
         connectionId = ++connectionSequence;
+        pendingNotifications = [];
         state.connectionId = connectionId;
         state.currentDevice = { ...device };
         state.status = 'connecting';
@@ -181,10 +270,20 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 return;
             }
             state.status = 'ready';
+            if (reconnecting) {
+                appendReconnectMarker();
+            }
+            state.received.push(...pendingNotifications);
+            pendingNotifications = [];
+            state.wasReady = true;
             state.message = '设备已就绪，点击设备卡片进入控制页面';
         } catch (error) {
+            if (state.connectionId !== connectionId) { //20261110-4 add - An older failure cannot revoke a newer device's preparation.
+                return;
+            }
             state.status = 'disconnected';
             state.target = null;
+            pendingNotifications = [];
             state.message = error.message || '连接准备失败，请重试';
             try {
                 await platform.disconnect({ deviceId, connectionId });
@@ -240,6 +339,20 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
                 === (expected.length === 4 ? '0000' + expected + '-0000-1000-8000-00805F9B34FB' : expected);
     }
 
+    /******************************************************************************
+     * Function Name   : appendReconnectMarker
+     * Description     : Mark a resumed same-device session without inventing received bytes.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function appendReconnectMarker() { //20261110-4 add
+        const time = new Date(clock.now ? clock.now() : Date.now()).toLocaleTimeString('zh-CN', { hour12: false });
+
+        state.received.push({ id: ++recordSequence, type: 'marker', time, text: '设备已重新连接' });
+        state.sent.push({ id: ++recordSequence, type: 'marker', time, text: '设备已重新连接' });
+    }
+
     platform.on?.('deviceFound', onDeviceFound);
     platform.on?.('scanFailed', onScanFailed);
     platform.on?.('adapterState', onAdapterState);
@@ -271,6 +384,8 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
      ******************************************************************************/
     function onAdapterState(event) { //20261110-1 add
         if (!event.available) {
+            abandonWrite();
+            pendingNotifications = [];
             state.available = false;
             state.target = null; //20261110-2 add - No notification remains eligible after adapter loss.
             scanSequence++;
@@ -315,7 +430,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function scan() { //20261110-1 add
         const scanId = ++scanSequence;
 
-        if (!state.available || state.status === 'connecting' || state.status === 'ready') {
+        if (!state.available || ['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) {
             return;
         }
         clock.clearTimeout(scanTimer);
@@ -399,7 +514,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function start() {
         let result;
 
-        if (state.status === 'connecting' || state.status === 'ready') { //20261110-2 add - A scan retry cannot replace an active device session.
+        if (['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)) { //20261110-4 change - Keep cleanup eligibility separate from discovery.
             return;
         }
         state.page = 'devices';

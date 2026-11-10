@@ -136,6 +136,31 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
             await page.locator('[data-device="AA:01"]').click();
             await page.locator('[data-page="control"]').waitFor();
             assert.ok(await page.getByText('00 FF', { exact: true }).isVisible());
+            if (control === 'session') {
+                await page.locator('textarea').fill('FF');
+                await page.locator('[data-action="send"]').click();
+                await page.getByText('写入成功', { exact: true }).waitFor();
+                await page.locator('[data-action="back"]').click();
+                await page.locator('[data-action="disconnect"]').click({ timeout: 2000 });
+                await page.locator('[data-connect="AA:01"]').click();
+                await page.getByText('已就绪', { exact: true }).waitFor();
+                await page.locator('[data-device="AA:01"]').click();
+                assert.equal(await page.locator('[data-record-type="marker"]').count(), 2);
+                assert.equal(await page.locator('textarea').inputValue(), 'FF');
+                await page.locator('[data-action="disconnect"]').click();
+                await page.getByText('已断开', { exact: true }).waitFor();
+                await page.locator('[data-action="back"]').click();
+                await page.locator('[data-connect="AA:02"]').click();
+                await page.getByText('已就绪', { exact: true }).waitFor();
+                await page.locator('[data-device="AA:02"]').click();
+                assert.equal(await page.locator('textarea').inputValue(), '');
+                assert.equal(await page.locator('[data-direction="send"]').count(), 0);
+                assert.equal(await page.locator('[data-direction="receive"]').count(), 1);
+                assert.equal(await page.locator('[data-record-type="marker"]').count(), 0);
+                assert.ok(await page.getByText('AA:02', { exact: true }).isVisible());
+                await page.screenshot({ path: path.join(root, 'artifacts/session-switch.png'), fullPage: true });
+                return;
+            }
             if (control === 'send') {
                 await page.locator('textarea').fill('00 01 7f 80 ff', { timeout: 2000 });
                 await page.locator('[data-action="send"]').click();
@@ -189,3 +214,16 @@ async function renderManualSend() {
 }
 
 test('页面输入发送原始字节，发送记录与同时收到的数据分窗显示', renderManualSend);
+
+/******************************************************************************
+ * Function Name   : renderSessionSwitch
+ * Description     : Disconnect from both pages, reconnect the same target and switch to a clean device.
+ * Input Parameters: None
+ * Return Value    : Promise resolved after browser assertions.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function renderSessionSwitch() {
+    await renderDiscoveredCards(null, 'session');
+}
+
+test('两页可断开，同设备重连有标记，另一设备不显示旧内容', renderSessionSwitch);

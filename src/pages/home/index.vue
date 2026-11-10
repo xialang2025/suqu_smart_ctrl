@@ -6,7 +6,8 @@
             <view class="section-title">设备页</view>
             <view class="notice" role="status">{{ state.message || '正在检查蓝牙状态…' }}</view>
             <view class="actions">
-                <button class="primary" data-action="scan" :disabled="['initializing', 'connecting', 'ready'].includes(state.status)" @click="toggleScan">{{ state.scanning ? '停止扫描' : '重新扫描' }}</button>
+                <button class="primary" data-action="scan" :disabled="['initializing', 'connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)" @click="toggleScan">{{ state.scanning ? '停止扫描' : '重新扫描' }}</button>
+                <button v-if="state.status === 'ready' || state.status === 'disconnect-error'" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
                 <button v-if="state.status === 'unavailable'" class="secondary" @click="openSettings">系统设置</button>
             </view>
         </view>
@@ -14,14 +15,16 @@
             <view class="device-name">{{ device.name }}</view>
             <view class="device-address">{{ device.deviceId }}</view>
             <view class="device-meta">信号 {{ device.rssi }} dBm <text :class="{ ready: isReady(device) }">{{ deviceStatus(device) }}</text></view>
-            <button v-if="!isReady(device)" class="primary connect" :data-connect="device.deviceId" :disabled="state.status === 'connecting' || state.status === 'ready'" @click.stop="application.connect(device.deviceId)">{{ state.currentDevice?.deviceId === device.deviceId && state.status === 'connecting' ? '连接中…' : '连接' }}</button>
+            <button v-if="!isReady(device)" class="primary connect" :data-connect="device.deviceId" :disabled="['connecting', 'ready', 'disconnecting', 'disconnect-error'].includes(state.status)" @click.stop="application.connect(device.deviceId)">{{ state.currentDevice?.deviceId === device.deviceId && state.status === 'connecting' ? '连接中…' : '连接' }}</button>
         </view>
         <view v-if="!state.devices.length" class="empty">{{ state.scanning ? '正在寻找附近的蓝牙设备…' : '暂无设备' }}<br />请确认模块已开启</view>
     </view>
     <view v-else class="screen control-screen" data-page="control">
         <view class="control-heading">
             <button class="secondary" data-action="back" @click="application.backToDevices">返回设备页</button>
-            <text class="ready">{{ state.status === 'ready' ? '已就绪' : '未就绪' }}</text>
+            <button v-if="state.status === 'ready' || state.status === 'disconnect-error'" class="secondary" data-action="disconnect" @click="application.disconnect">{{ state.status === 'disconnect-error' ? '重试断开' : '断开连接' }}</button>
+            <button v-if="state.status === 'disconnected'" class="secondary" data-action="reconnect" @click="application.connect(state.currentDevice.deviceId)">重新连接</button>
+            <text :class="{ ready: state.status === 'ready', failed: state.status !== 'ready' }">{{ connectionLabel() }}</text>
         </view>
         <view class="device-name control-device">{{ state.currentDevice?.name }}</view>
         <view class="device-address">{{ state.currentDevice?.deviceId }}</view>
@@ -29,9 +32,12 @@
         <view class="section data-panel">
             <view class="section-title">接收窗口</view>
             <scroll-view class="data-scroll" scroll-y>
-                <view v-for="record in state.received" :key="record.id" class="data-record" data-direction="receive">
-                    <view class="record-meta">{{ record.time }} · {{ record.length }} 字节</view>
-                    <view class="record-bytes">{{ record.text }}</view>
+                <view v-for="record in state.received" :key="record.id" class="data-record" data-direction="receive" :data-record-type="record.type">
+                    <view v-if="record.type === 'marker'" class="session-marker">{{ record.time }} · {{ record.text }}</view>
+                    <template v-else>
+                        <view class="record-meta">{{ record.time }} · {{ record.length }} 字节</view>
+                        <view class="record-bytes">{{ record.text }}</view>
+                    </template>
                 </view>
                 <view v-if="!state.received.length" class="empty">等待设备数据</view>
             </scroll-view>
@@ -39,9 +45,12 @@
         <view class="section data-panel send-panel">
             <view class="section-title">发送窗口</view>
             <scroll-view class="data-scroll" scroll-y>
-                <view v-for="record in state.sent" :key="record.id" class="data-record" data-direction="send">
-                    <view class="record-meta">{{ record.time }} · {{ record.length }} 字节 <text :class="record.status">{{ writeStatus(record) }}</text></view>
-                    <view class="record-bytes">{{ record.text }}</view>
+                <view v-for="record in state.sent" :key="record.id" class="data-record" data-direction="send" :data-record-type="record.type">
+                    <view v-if="record.type === 'marker'" class="session-marker">{{ record.time }} · {{ record.text }}</view>
+                    <template v-else>
+                        <view class="record-meta">{{ record.time }} · {{ record.length }} 字节 <text :class="record.status">{{ writeStatus(record) }}</text></view>
+                        <view class="record-bytes">{{ record.text }}</view>
+                    </template>
                 </view>
                 <view v-if="!state.sent.length" class="empty compact">暂无发送记录</view>
             </scroll-view>
@@ -94,7 +103,21 @@ function deviceStatus(device) { //20261110-2 add
     if (isReady(device)) {
         return '已就绪';
     }
-    return state.value.status === 'connecting' && state.value.currentDevice?.deviceId === device.deviceId ? '连接中' : '未连接';
+    if (state.value.currentDevice?.deviceId === device.deviceId) { //20261110-4 change
+        return { connecting: '连接中', disconnecting: '断开中', 'disconnect-error': '断开未确认' }[state.value.status] || '未连接';
+    }
+    return '未连接';
+}
+
+/******************************************************************************
+ * Function Name   : connectionLabel
+ * Description     : Show uncertain cleanup separately from confirmed connection loss.
+ * Input Parameters: None
+ * Return Value    : Localized connection state.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function connectionLabel() { //20261110-4 add
+    return { ready: '已就绪', connecting: '连接中', disconnecting: '断开中', 'disconnect-error': '断开未确认', disconnected: '已断开', unavailable: '蓝牙不可用' }[state.value.status] || '未就绪';
 }
 
 /******************************************************************************

@@ -49,4 +49,7 @@ button { font: inherit; }
 .success { color: #127b57; }
 .failed { color: #b12929; }
 .unknown { color: #98630c; }
+/*20261110-4 add - Session boundaries must not look like received or transmitted bytes. */
+.session-marker { color: #617185; font-size: 12px; padding: 4px 0; text-align: center; }
+.control-heading { flex-wrap: wrap; flex: none; }
 </style>
