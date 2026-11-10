@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-7 add - Exercise continuous records and independent clear through the public facade.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +20,7 @@ async function readyWindows() {
 
     await app.start();
     scan = system.calls.find(function scan(call) { return call.method === 'startScan'; });
-    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:01', name: '模块', rssi: -40 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -40 });
     await app.connect('AA:01');
     connection = system.calls.find(function connect(call) { return call.method === 'connect'; });
     app.openControl();
@@ -118,7 +119,7 @@ async function boundedPreparationAndDeviceSwitch() {
     await app.disconnect();
     await app.start();
     scan = system.calls.filter(function scan(call) { return call.method === 'startScan'; }).at(-1);
-    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:02', name: '新模块', rssi: -50 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:02', name: 'VG新模块', rssi: -50 });
     system.platform.subscribe = subscribe;
     await app.connect('AA:02');
     assert.equal(app.state.receivedDropped, 0);

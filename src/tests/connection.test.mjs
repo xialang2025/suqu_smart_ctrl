@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-2 add - Verify connection readiness through public application operations.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,7 +25,7 @@ async function readyBeforeEntering() {
     };
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '目标模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG目标模块', rssi: -50 });
     pending = app.connect('AA:01');
     await new Promise(setImmediate);
     assert.equal(app.state.status, 'connecting');
@@ -57,7 +58,7 @@ async function rejectIncompatibleProfile() {
 
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '不兼容模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG不兼容模块', rssi: -50 });
     await app.connect('AA:01');
     assert.equal(app.state.status, 'disconnected');
     assert.match(app.state.message, /暂不支持该设备/);
@@ -84,7 +85,7 @@ async function receiveBeforeEntering() {
 
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -50 });
     await app.connect('AA:01');
     connection = system.calls.find(function connect(call) { return call.method === 'connect'; });
     system.emit('notification', { ...connection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [0, 255] });
@@ -119,8 +120,8 @@ async function failedSubscriptionAndSingleDevice() {
 
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '模块一', rssi: -50 });
-    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: '模块二', rssi: -60 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块一', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: 'VG模块二', rssi: -60 });
     system.platform.subscribe = async function fail() { throw new Error('接收通知开启失败'); };
     await app.connect('AA:01');
     assert.equal(app.state.status, 'disconnected');
@@ -150,7 +151,7 @@ async function revokeReadinessOnLinkLoss() {
 
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -50 });
     await app.connect('AA:01');
     connection = system.calls.find(function connect(call) { return call.method === 'connect'; });
     system.emit('connectionChanged', { ...connection, connected: false });

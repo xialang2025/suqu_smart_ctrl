@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-1 add - Verify device discovery through public application operations.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -5,13 +6,13 @@ import { createApplication } from '../common/application.js';
 import { createSystem } from './system.mjs';
 
 /******************************************************************************
- * Function Name   : discoverUnnamedDevice
- * Description     : Start scanning after initialization and render a device with its actual identity.
+ * Function Name   : discoverOnlyVgDevices
+ * Description     : Admit only uppercase VG names through the public discovery boundary.
  * Input Parameters: None
  * Return Value    : Promise resolved after assertions.
  * Date            : 2026.11.10
  ******************************************************************************/
-async function discoverUnnamedDevice() {
+async function discoverOnlyVgDevices() { //20261110-10 change
     const system = createSystem();
     const app = createApplication(system.platform, system.clock);
     let scan;
@@ -19,14 +20,51 @@ async function discoverUnnamedDevice() {
     await app.start();
     scan = system.calls.find(function find(call) { return call.method === 'startScan'; });
     assert.ok(scan, '蓝牙条件具备后应自动扫描');
-    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:01', name: '', rssi: -53 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:01', name: 'VG7439-56EB2DF8', rssi: -53 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:02', name: '', rssi: -60 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:03', name: '其他模块', rssi: -60 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:04', name: 'XVG模块', rssi: -60 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:05', name: 'vg模块', rssi: -60 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:06', name: 'Vg模块', rssi: -60 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:07', name: 'VG', rssi: -61 });
     assert.equal(app.state.scanning, true);
     assert.equal(app.state.devices[0].deviceId, 'AA:01');
-    assert.equal(app.state.devices[0].name, '未命名设备');
+    assert.equal(app.state.devices[0].name, 'VG7439-56EB2DF8');
     assert.equal(app.state.devices[0].rssi, -53);
+    assert.deepEqual(app.state.devices.map(function identity(device) { return device.deviceId; }), ['AA:01', 'AA:07']);
 }
 
-test('进入设备页自动扫描，无名称模块仍显示地址和信号', discoverUnnamedDevice);
+test('进入设备页自动扫描，仅显示大写VG前缀设备，其他及无名称设备不显示', discoverOnlyVgDevices);
+
+/******************************************************************************
+ * Function Name   : removeRenamedDevice
+ * Description     : Withdraw an existing card when its current advertisement loses the VG prefix.
+ * Input Parameters: None
+ * Return Value    : Promise resolved after assertions.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function removeRenamedDevice() { //20261110-10 add
+    const system = createSystem();
+    const app = createApplication(system.platform, system.clock);
+    let scanId;
+
+    await app.start();
+    scanId = system.calls.find(function find(call) { return call.method === 'startScan'; }).scanId;
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -50 });
+    assert.equal(app.state.devices.length, 1);
+    system.emit('deviceFound', { scanId: scanId - 1, deviceId: 'AA:01', name: '旧广播', rssi: -40 });
+    assert.equal(app.state.devices.length, 1, '过期扫描不能移除当前卡片');
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '其他模块', rssi: -40 });
+    assert.equal(app.state.devices.length, 0, '名称不再符合时旧卡片也应消失');
+    await app.connect('AA:01');
+    assert.equal(system.calls.filter(function connect(call) { return call.method === 'connect'; }).length, 0);
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -45 });
+    assert.equal(app.state.devices.length, 1, '恢复VG前缀后可重新发现');
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '', rssi: -40 });
+    assert.equal(app.state.devices.length, 0);
+}
+
+test('当前扫描的设备改为其他或空名称后移除旧卡片，过期广播无权移除', removeRenamedDevice);
 
 /******************************************************************************
  * Function Name   : updateDeviceIdentity
@@ -42,9 +80,9 @@ async function updateDeviceIdentity() {
 
     await app.start();
     scanId = system.calls.find(function find(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'aa:01', name: '改名模块', rssi: -70 });
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '改名模块', rssi: -40 });
-    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: '改名模块', rssi: -60 });
+    system.emit('deviceFound', { scanId, deviceId: 'aa:01', name: 'VG改名模块', rssi: -70 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG改名模块', rssi: -40 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: 'VG改名模块', rssi: -60 });
     assert.equal(app.state.devices.length, 2);
     assert.equal(app.state.devices[0].rssi, -40);
     assert.notEqual(app.state.devices[0].deviceId, app.state.devices[1].deviceId);
@@ -66,14 +104,14 @@ async function stopDiscoveryAfterWindow() {
 
     await app.start();
     scanId = system.calls.find(function find(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -50 });
     await system.advance(14999);
     assert.equal(app.state.scanning, true);
     await system.advance(1);
     assert.equal(app.state.scanning, false);
     assert.equal(app.state.devices.length, 1);
     assert.equal(system.calls.filter(function stop(call) { return call.method === 'stopScan'; }).length, 1);
-    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: '迟到模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: 'VG迟到模块', rssi: -50 });
     assert.equal(app.state.devices.length, 1);
 }
 
@@ -99,8 +137,8 @@ async function retryAfterScanFailure() {
     assert.match(app.state.message, /扫描过于频繁/);
     await app.scan();
     nextId = system.calls.filter(function find(call) { return call.method === 'startScan'; }).at(-1).scanId;
-    system.emit('deviceFound', { scanId: oldId, deviceId: 'AA:01', name: '旧广告', rssi: -50 });
-    system.emit('deviceFound', { scanId: nextId, deviceId: 'AA:02', name: '新广告', rssi: -60 });
+    system.emit('deviceFound', { scanId: oldId, deviceId: 'AA:01', name: 'VG旧广告', rssi: -50 });
+    system.emit('deviceFound', { scanId: nextId, deviceId: 'AA:02', name: 'VG新广告', rssi: -60 });
     assert.deepEqual(app.state.devices.map(function identity(device) { return device.deviceId; }), ['AA:02']);
 }
 

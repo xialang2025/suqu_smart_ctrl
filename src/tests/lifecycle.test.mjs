@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-6 add - Exercise lifecycle through public application operations and host events.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +19,7 @@ async function readyApplication() {
 
     await app.start();
     scan = system.calls.find(function scan(call) { return call.method === 'startScan'; });
-    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:01', name: '模块', rssi: -40 });
+    system.emit('deviceFound', { scanId: scan.scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -40 });
     await app.connect('AA:01');
     app.openControl();
     app.setInput('01');

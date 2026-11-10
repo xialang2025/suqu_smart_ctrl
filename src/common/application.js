@@ -647,17 +647,24 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
 
     /******************************************************************************
      * Function Name   : onDeviceFound
-     * Description     : Show devices from the current scan without relying on advertised names.
+     * Description     : Show only uppercase VG names from the current discovery operation.
      * Input Parameters: event
      * Return Value    : None
      * Date            : 2026.11.10
      ******************************************************************************/
-    function onDeviceFound(event) { //20261110-1 add
+    function onDeviceFound(event) { //20261110-10 change
         const deviceId = String(event.deviceId || '').toUpperCase();
         const device = { deviceId, name: String(event.name || '').trim() || '未命名设备', rssi: Number(event.rssi) };
         const existing = state.devices.findIndex(function same(item) { return item.deviceId === deviceId; });
 
         if (!state.scanning || event.scanId !== scanSequence || !deviceId) {
+            return;
+        }
+        if (!device.name.startsWith('VG')) { //20261110-10 add - Keep unrelated advertisements out of the visible device model.
+            if (existing >= 0) {
+                state.devices.splice(existing, 1); // Remove stale cards when the current advertised name is no longer eligible.
+                publish();
+            }
             return;
         }
         if (existing < 0) { //20261110-1 change - Device identity survives repeated advertisements and renaming.

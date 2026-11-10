@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-0 add - Use only the native transport as a system-boundary substitute.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -64,7 +65,7 @@ async function bridgeRespectsApplicationDeadline() {
 
     await app.start();
     scanId = packets.find(function scan(packet) { return packet.method === 'startScan'; }).options.scanId;
-    host.__suquEvent('deviceFound', { scanId, deviceId: 'AA:01', name: '模块', rssi: -50 });
+    host.__suquEvent('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -50 });
     pending = app.connect('AA:01');
     await new Promise(setImmediate);
     await system.advance(15000);

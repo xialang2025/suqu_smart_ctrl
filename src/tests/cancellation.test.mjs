@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-5 add - Verify cancellation and time at the public operation boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +19,7 @@ async function discoveredSystem() {
 
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -50 });
     return { system, app };
 }
 

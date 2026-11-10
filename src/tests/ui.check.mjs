@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-0 add - Render the real compiled application in an isolated headless browser.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -120,9 +121,13 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
                     window.__suquReply(packet.id, true, packet.method === 'initialize' ? { available: true }
                         : packet.method === 'connect' ? { mtu: 23, services } : {});
                     if (packet.method === 'startScan') {
-                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:01', name: '改名模块', rssi: -70 });
-                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:01', name: '改名模块', rssi: -40 });
-                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:02', name: '', rssi: -60 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:01', name: 'VG改名模块', rssi: -70 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:01', name: 'VG改名模块', rssi: -40 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:02', name: 'VG第二模块', rssi: -60 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:03', name: '', rssi: -60 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:04', name: '其他模块', rssi: -60 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:05', name: 'vg模块', rssi: -60 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:06', name: 'XVG模块', rssi: -60 });
                     }
                     if (packet.method === 'subscribe') {
                         window.__suquEvent('notification', { ...window.__testConnection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [0, 255] });
@@ -136,7 +141,9 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
         await page.goto('http://127.0.0.1:' + server.address().port);
         await page.locator('[data-device="AA:01"]').waitFor({ timeout: 2000 });
         assert.equal(await page.locator('[data-device]').count(), 2);
-        assert.ok(await page.getByText('未命名设备', { exact: true }).isVisible());
+        assert.ok(await page.getByText('VG第二模块', { exact: true }).isVisible());
+        assert.equal(await page.getByText('未命名设备', { exact: true }).count(), 0);
+        assert.equal(await page.locator('[data-device="AA:03"], [data-device="AA:04"], [data-device="AA:05"], [data-device="AA:06"]').count(), 0);
         if (control) {
             await page.locator('[data-connect="AA:01"]').click({ timeout: 2000 });
             if (control === 'cancel') {
@@ -278,7 +285,7 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
     }
 }
 
-test('编译设备页显示去重卡片，并可停止扫描保留结果', renderDiscoveredCards);
+test('编译设备页仅显示VG前缀去重卡片，隐藏其他及无名称设备，可停止扫描', renderDiscoveredCards);
 
 /******************************************************************************
  * Function Name   : renderControl

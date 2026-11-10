@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-3 add - Drive actual manual sending through the public application facade.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +19,7 @@ async function readySystem(options = {}) {
 
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '模块', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG模块', rssi: -50 });
     await app.connect('AA:01');
     app.openControl();
     return { system, app };

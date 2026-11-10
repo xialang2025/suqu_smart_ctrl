@@ -1,3 +1,4 @@
+//20261110-10 change - Use eligible VG device names in existing behavioral scenarios.
 //20261110-4 add - Verify device ownership through real public connection and send operations.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,8 +19,8 @@ async function twoDevices() {
 
     await app.start();
     scanId = system.calls.find(function scan(call) { return call.method === 'startScan'; }).scanId;
-    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: '设备一', rssi: -50 });
-    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: '设备二', rssi: -60 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:01', name: 'VG设备一', rssi: -50 });
+    system.emit('deviceFound', { scanId, deviceId: 'AA:02', name: 'VG设备二', rssi: -60 });
     await app.connect('AA:01');
     return { system, app };
 }
