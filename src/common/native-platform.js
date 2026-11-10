@@ -58,7 +58,7 @@ export function createNativePlatform(transport, host = globalThis, clock = globa
             try {
                 transport.postMessage(JSON.stringify({ id, method, options }));
             } catch (error) {
-                receiveReply(id, false, { message: error.message });
+                receiveReply(id, false, { message: error.message, code: method === 'write' ? 'unknown' : 'native' }); //20261110-3 change
             }
         });
     }
@@ -79,6 +79,7 @@ export function createNativePlatform(transport, host = globalThis, clock = globa
         connect: function connect(options) { return call('connect', options); },
         subscribe: function subscribe(options) { return call('subscribe', options); },
         disconnect: function disconnect(options) { return call('disconnect', options); },
+        write: function write(options) { return call('write', options); }, //20261110-3 add
         on: function on(name, callback) {
             const callbacks = listeners.get(name) || new Set();
 

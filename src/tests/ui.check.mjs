@@ -95,9 +95,11 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
         browser = await chromium.launch({ channel: 'msedge', headless: true });
         page = await browser.newPage({ viewport: { width: 390, height: 844 } });
         await page.addInitScript(function installSystemBoundary() {
+            window.__nativeRequests = [];
             window.NativeBle = { postMessage: function postMessage(text) {
                 const packet = JSON.parse(text);
 
+                window.__nativeRequests.push(packet);
                 queueMicrotask(function reply() {
                     const services = [{ uuid: '0000ffe0-0000-1000-8000-00805f9b34fb', characteristics: [
                         { uuid: '0000ffe1-0000-1000-8000-00805f9b34fb', properties: { write: true } },
@@ -117,6 +119,9 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
                     if (packet.method === 'subscribe') {
                         window.__suquEvent('notification', { ...window.__testConnection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [0, 255] });
                     }
+                    if (packet.method === 'write') {
+                        window.__suquEvent('notification', { ...window.__testConnection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [1, 2] });
+                    }
                 });
             } };
         });
@@ -131,6 +136,17 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
             await page.locator('[data-device="AA:01"]').click();
             await page.locator('[data-page="control"]').waitFor();
             assert.ok(await page.getByText('00 FF', { exact: true }).isVisible());
+            if (control === 'send') {
+                await page.locator('textarea').fill('00 01 7f 80 ff', { timeout: 2000 });
+                await page.locator('[data-action="send"]').click();
+                await page.getByText('写入成功', { exact: true }).waitFor();
+                assert.deepEqual(await page.evaluate(function writes() { return window.__nativeRequests.filter(function write(packet) { return packet.method === 'write'; }).map(function bytes(packet) { return packet.options.value; }); }), [[0, 1, 127, 128, 255]]);
+                assert.equal(await page.locator('[data-direction="send"]').count(), 1);
+                assert.equal(await page.locator('[data-direction="receive"]').count(), 2);
+                assert.equal(await page.locator('textarea').inputValue(), '00 01 7f 80 ff');
+                await page.screenshot({ path: path.join(root, 'artifacts/manual-send.png'), fullPage: true });
+                return;
+            }
             await page.screenshot({ path: path.join(root, 'artifacts/control.png'), fullPage: true });
             return;
         }
@@ -160,3 +176,16 @@ async function renderControl() {
 }
 
 test('连接就绪不自动跳页，点击卡片进入后可看到提前收到的数据', renderControl);
+
+/******************************************************************************
+ * Function Name   : renderManualSend
+ * Description     : Submit real page input and inspect native bytes and direction-specific windows.
+ * Input Parameters: None
+ * Return Value    : Promise resolved after browser assertions.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function renderManualSend() {
+    await renderDiscoveredCards(null, 'send');
+}
+
+test('页面输入发送原始字节，发送记录与同时收到的数据分窗显示', renderManualSend);

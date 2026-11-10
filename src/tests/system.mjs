@@ -31,6 +31,7 @@ export function createSystem(options = {}) {
         },
         subscribe: async function subscribe(value) { calls.push({ method: 'subscribe', ...value }); return {}; },
         disconnect: async function disconnect(value) { calls.push({ method: 'disconnect', ...value }); return {}; },
+        write: async function write(value) { calls.push({ method: 'write', ...value }); return {}; }, //20261110-3 add
         on: function on(name, callback) { listeners.set(name, [...(listeners.get(name) || []), callback]); },
     };
 

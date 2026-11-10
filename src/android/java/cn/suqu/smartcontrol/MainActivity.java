@@ -67,6 +67,10 @@ public final class MainActivity extends Activity {
     private int pendingSubscribe;
     private Runnable connectDeadline;
     private Runnable subscribeDeadline;
+    //20261110-3 add - One native write owns its callback and deadline.
+    private int pendingWrite;
+    private UUID pendingWriteUuid;
+    private Runnable writeDeadline;
 
     /******************************************************************************
      * Function Name   : onCreate
@@ -168,6 +172,8 @@ public final class MainActivity extends Activity {
                 connectDevice(id, options);
             } else if ("subscribe".equals(method)) {
                 subscribeDevice(id, options);
+            } else if ("write".equals(method)) {
+                writeDevice(id, options);
             } else if ("disconnect".equals(method)) {
                 if (options.optInt("connectionId") == activeConnectionId) {
                     closeConnection("连接已结束", false);
@@ -596,6 +602,31 @@ public final class MainActivity extends Activity {
                             reply(request, status == BluetoothGatt.GATT_SUCCESS, object("message", status == BluetoothGatt.GATT_SUCCESS ? "接收已准备" : "接收通知开启失败"));
                         });
                     }
+                    /******************************************************************************
+                     * Function Name   : onCharacteristicWrite
+                     * Description     : Settle the current write independently of incoming receive notifications.
+                     * Input Parameters: source, characteristic, status
+                     * Return Value    : None
+                     * Date            : 2026.11.10
+                     ******************************************************************************/
+                    @Override
+                    public void onCharacteristicWrite(BluetoothGatt source, BluetoothGattCharacteristic characteristic, int status) { //20261110-3 add
+                        handler.post(() -> {
+                            int request;
+
+                            if (source != gatt || connectionId != activeConnectionId || pendingWrite == 0
+                                    || !characteristic.getUuid().equals(pendingWriteUuid)) {
+                                return;
+                            }
+                            request = pendingWrite;
+                            pendingWrite = 0;
+                            pendingWriteUuid = null;
+                            handler.removeCallbacks(writeDeadline);
+                            reply(request, status == BluetoothGatt.GATT_SUCCESS, object("code", "rejected",
+                                    "message", status == BluetoothGatt.GATT_SUCCESS ? "写入成功" : "写入失败"));
+                        });
+                    }
+
 
                     /******************************************************************************
                      * Function Name   : onCharacteristicChanged
@@ -773,16 +804,22 @@ public final class MainActivity extends Activity {
         String deviceId = activeDeviceId;
         int connecting = pendingConnect;
         int subscribing = pendingSubscribe;
+        int writing = pendingWrite;
 
         gatt = null;
         activeConnectionId = 0;
         pendingConnect = 0;
         pendingSubscribe = 0;
+        pendingWrite = 0;
+        pendingWriteUuid = null;
         if (connectDeadline != null) {
             handler.removeCallbacks(connectDeadline);
         }
         if (subscribeDeadline != null) {
             handler.removeCallbacks(subscribeDeadline);
+        }
+        if (writeDeadline != null) {
+            handler.removeCallbacks(writeDeadline);
         }
         if (previous != null) {
             try {
@@ -802,9 +839,93 @@ public final class MainActivity extends Activity {
         if (subscribing != 0) {
             reply(subscribing, false, object("message", message, "code", "connection"));
         }
+        if (writing != 0) {
+            reply(writing, false, object("message", message, "code", "unknown"));
+        }
         if (notify && connectionId != 0) {
             emit("connectionChanged", object("deviceId", deviceId, "connectionId", connectionId, "connected", false, "message", message));
         }
+    }
+
+    /******************************************************************************
+     * Function Name   : writeDevice
+     * Description     : Write one payload according to actual characteristic and MTU capabilities.
+     * Input Parameters: id, options
+     * Return Value    : None; resolves after the native write outcome.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void writeDevice(int id, JSONObject options) { //20261110-3 add
+        BluetoothGattCharacteristic characteristic = receiveCharacteristic(options);
+        BluetoothGatt source = gatt;
+        JSONArray values = options.optJSONArray("value");
+        byte[] payload;
+        Object raw;
+        int index;
+        int value;
+        int mode;
+        boolean accepted;
+
+        if (characteristic == null || pendingConnect != 0 || pendingSubscribe != 0 || pendingWrite != 0) {
+            reply(id, false, object("code", "rejected", "message", "设备未就绪或正在处理写入"));
+            return;
+        }
+        if (values == null || values.length() == 0 || values.length() > Math.min(512, negotiatedMtu - 3)) {
+            reply(id, false, object("code", "rejected", "message", "数据长度超出当前单次写入能力"));
+            return;
+        }
+        payload = new byte[values.length()];
+        for (index = 0; index < values.length(); index++) {
+            raw = values.opt(index);
+            if (!(raw instanceof Number)) {
+                reply(id, false, object("code", "rejected", "message", "发送数据不是完整字节"));
+                return;
+            }
+            value = ((Number) raw).intValue();
+            if (value < 0 || value > 255 || ((Number) raw).doubleValue() != value) {
+                reply(id, false, object("code", "rejected", "message", "发送字节超出范围"));
+                return;
+            }
+            payload[index] = (byte) value;
+        }
+        if ((characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) {
+            mode = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
+        } else if ((characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+            mode = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
+        } else {
+            reply(id, false, object("code", "rejected", "message", "目标特征不支持写入"));
+            return;
+        }
+        pendingWrite = id;
+        pendingWriteUuid = characteristic.getUuid();
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                accepted = source.writeCharacteristic(characteristic, payload, mode) == 0;
+            } else {
+                characteristic.setWriteType(mode);
+                characteristic.setValue(payload);
+                accepted = source.writeCharacteristic(characteristic);
+            }
+        } catch (SecurityException error) {
+            pendingWrite = 0;
+            pendingWriteUuid = null;
+            reply(id, false, object("code", "rejected", "message", "蓝牙权限不足，无法写入"));
+            return;
+        } catch (RuntimeException error) {
+            closeConnection("写入结果无法确认，请手动重连", true);
+            return;
+        }
+        if (!accepted) {
+            pendingWrite = 0;
+            pendingWriteUuid = null;
+            reply(id, false, object("code", "rejected", "message", "系统明确拒绝本次写入"));
+            return;
+        }
+        writeDeadline = () -> {
+            if (gatt == source && pendingWrite == id) {
+                closeConnection("等待写入结果超时，请手动重连", true);
+            }
+        };
+        handler.postDelayed(writeDeadline, 5000);
     }
 
     private final class NativeBridge {

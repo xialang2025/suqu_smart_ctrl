@@ -11,12 +11,84 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     const state = { //20261110-2 change - Keep the connected device and records outside the page lifetime.
         page: 'devices', status: 'idle', message: '', devices: [], scanning: false, available: false,
         currentDevice: null, connectionId: 0, target: null, mtu: 23, received: [],
+        input: '', sent: [], sending: false, //20261110-3 add - Sending and receiving own separate visible records.
     };
-    const app = { state, start, subscribe, scan, stopScan, connect, openControl, backToDevices };
+    const app = { state, start, subscribe, scan, stopScan, connect, openControl, backToDevices, setInput, send };
     let scanSequence = 0;
     let scanTimer = null;
     let connectionSequence = 0;
     let recordSequence = 0;
+
+    /******************************************************************************
+     * Function Name   : setInput
+     * Description     : Keep user-entered hexadecimal text available after manual sending.
+     * Input Parameters: text
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function setInput(text) { //20261110-3 add
+        state.input = String(text);
+        publish();
+    }
+
+    /******************************************************************************
+     * Function Name   : send
+     * Description     : Write raw user bytes and record only the local write outcome.
+     * Input Parameters: None
+     * Return Value    : Promise resolved when the write outcome is known.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    async function send() { //20261110-3 add
+        const normalized = state.input.replace(/\s/g, '');
+        const maximum = Math.min(512, Math.max(0, state.mtu - 3));
+        let bytes;
+        let record;
+
+        if (state.status !== 'ready' || !state.target || !state.currentDevice) {
+            state.message = '设备未就绪或已断开，不能发送';
+            publish();
+            return;
+        }
+        if (state.sending) {
+            state.message = '正在等待写入结果，请勿重复发送';
+            publish();
+            return;
+        }
+        if (!normalized || !/^[0-9a-fA-F]+$/.test(normalized) || normalized.length % 2 !== 0) {
+            state.message = !normalized ? '发送内容不能为空' : '请输入完整的两位十六进制字节';
+            publish();
+            return;
+        }
+        bytes = normalized.match(/.{2}/g).map(function byte(pair) { return parseInt(pair, 16); });
+        if (bytes.length > maximum) {
+            state.message = '当前单次最多 ' + maximum + ' 字节，超出内容不会发送';
+            publish();
+            return;
+        }
+        record = {
+            id: ++recordSequence, type: 'data', status: 'pending', length: bytes.length,
+            time: new Date(clock.now ? clock.now() : Date.now()).toLocaleTimeString('zh-CN', { hour12: false }),
+            text: bytes.map(function hex(value) { return value.toString(16).padStart(2, '0').toUpperCase(); }).join(' '),
+        };
+
+        state.sent.push(record);
+        state.sending = true;
+        publish();
+        try {
+            await platform.write({
+                deviceId: state.currentDevice.deviceId, connectionId: state.connectionId,
+                serviceId: state.target.serviceId, characteristicId: state.target.sendId,
+                writeNoResponse: state.target.writeNoResponse, value: bytes,
+            });
+            record.status = 'success';
+            state.message = '写入成功；写入结果不代表设备已执行';
+        } catch (error) {
+            record.status = ['timeout', 'unknown', 'connection'].includes(error.code) ? 'unknown' : 'failed';
+            state.message = record.status === 'unknown' ? '结果未知，应用未自动重发；' + error.message : error.message || '写入失败';
+        }
+        state.sending = false;
+        publish();
+    }
 
     platform.on?.('notification', onNotification);
     platform.on?.('connectionChanged', onConnectionChanged);
@@ -93,7 +165,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
             if (state.connectionId !== connectionId || state.status !== 'connecting') {
                 return;
             }
-            state.mtu = result.mtu || 23;
+            state.mtu = Number.isInteger(result.mtu) && result.mtu >= 23 && result.mtu <= 517 ? result.mtu : 23; //20261110-3 change - Use a validated negotiated capacity.
             service = (result.services || []).find(function target(item) { return matchesUuid(item.uuid, 'FFE0'); });
             send = service?.characteristics?.find(function writable(item) { return matchesUuid(item.uuid, 'FFE1') && (item.properties?.write || item.properties?.writeNoResponse); });
             receive = service?.characteristics?.find(function notifiable(item) { return matchesUuid(item.uuid, 'FFE2') && (item.properties?.notify || item.properties?.indicate); });

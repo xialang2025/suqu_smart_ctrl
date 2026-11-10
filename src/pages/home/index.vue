@@ -36,6 +36,21 @@
                 <view v-if="!state.received.length" class="empty">等待设备数据</view>
             </scroll-view>
         </view>
+        <view class="section data-panel send-panel">
+            <view class="section-title">发送窗口</view>
+            <scroll-view class="data-scroll" scroll-y>
+                <view v-for="record in state.sent" :key="record.id" class="data-record" data-direction="send">
+                    <view class="record-meta">{{ record.time }} · {{ record.length }} 字节 <text :class="record.status">{{ writeStatus(record) }}</text></view>
+                    <view class="record-bytes">{{ record.text }}</view>
+                </view>
+                <view v-if="!state.sent.length" class="empty compact">暂无发送记录</view>
+            </scroll-view>
+            <view class="send-input-row">
+                <textarea class="hex-input" :value="state.input" :maxlength="-1" placeholder="输入十六进制，例如 01 03 00 FF" aria-label="十六进制发送内容" @input="inputChanged" />
+                <button class="primary send-button" data-action="send" :disabled="state.status !== 'ready' || state.sending" @click="application.send">{{ state.sending ? '发送中' : '发送' }}</button>
+            </view>
+            <view class="input-note">十六进制 · 写入结果不代表设备已执行</view>
+        </view>
     </view>
 </template>
 <script setup>
@@ -93,6 +108,28 @@ function enterDevice(device) { //20261110-2 add
     if (isReady(device)) {
         application.openControl();
     }
+}
+
+/******************************************************************************
+ * Function Name   : inputChanged
+ * Description     : Preserve hexadecimal input without silent truncation.
+ * Input Parameters: event
+ * Return Value    : None
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function inputChanged(event) { //20261110-3 add
+    application.setInput(event.detail.value);
+}
+
+/******************************************************************************
+ * Function Name   : writeStatus
+ * Description     : Display the local write outcome independently of device execution.
+ * Input Parameters: record
+ * Return Value    : Localized status.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function writeStatus(record) { //20261110-3 add
+    return { pending: '等待结果', success: '写入成功', failed: '写入失败', unknown: '结果未知' }[record.status];
 }
 
 /******************************************************************************
