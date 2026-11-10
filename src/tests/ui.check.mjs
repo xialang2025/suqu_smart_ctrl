@@ -173,9 +173,13 @@ async function renderDiscoveredCards(context, control = false) { //20261110-2 ch
                     const view = document.querySelector('[data-window="receive"] .uni-scroll-view[style]');
                     return view && view.scrollTop > 0;
                 }, null, { timeout: 2000 });
-                await page.evaluate(function readOlder() { document.querySelector('[data-window="receive"] .uni-scroll-view[style]').scrollTop = 0; });
-                await page.waitForFunction(function atTop() { return document.querySelector('[data-window="receive"] .uni-scroll-view[style]').scrollTop === 0; });
-                await page.evaluate(function nextFragment() { window.__suquEvent('notification', { ...window.__testConnection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [170] }); });
+                await page.evaluate(function simultaneousReadAndReceive() { //20261110-8 change - Reproduce a notification before the browser delivers its deferred scroll event.
+                    const view = document.querySelector('[data-window="receive"] .uni-scroll-view[style]');
+
+                    view.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -1000 }));
+                    view.scrollTop = 0;
+                    window.__suquEvent('notification', { ...window.__testConnection, serviceId: 'FFE0', characteristicId: 'FFE2', value: [170] });
+                });
                 await page.locator('[data-direction="receive"]').last().getByText('AA', { exact: true }).waitFor();
                 assert.ok(await page.evaluate(function keptReading() { return document.querySelector('[data-window="receive"] .uni-scroll-view[style]').scrollTop < 10; }));
                 await page.locator('[data-action="clear-receive"]').click({ timeout: 2000 });

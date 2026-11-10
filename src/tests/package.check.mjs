@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
  ******************************************************************************/
 function independentPackage() {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const previous = fs.existsSync(path.join(root, 'dist/速驱智控-1.0.0.json'))
+        ? JSON.parse(fs.readFileSync(path.join(root, 'dist/速驱智控-1.0.0.json'), 'utf8')) : null; //20261110-8 add
     const result = spawnSync('python', ['tools/build-apk.py'], { cwd: root, encoding: 'utf8', windowsHide: true });
     let report;
 
@@ -27,6 +29,12 @@ function independentPackage() {
     assert.equal(report.signatureVerified, true);
     assert.equal(report.iconSha256, '84f4d548cda5bfacec6d0b423619c54fe1070b370f35d63d5e1be4d911322673');
     assert.ok(fs.statSync(report.apk).size > 10000);
+    assert.equal(report.webAssetsVerified, true); //20261110-8 add - Require evidence from the APK bytes, beyond successful compilation.
+    assert.match(report.certificateSha256, /^[0-9a-f]{64}$/);
+    assert.match(report.sourceSha256, /^[0-9a-f]{64}$/);
+    if (previous?.certificateSha256) {
+        assert.equal(report.certificateSha256, previous.certificateSha256, '覆盖安装签名身份不得变化');
+    }
 }
 
 test('正式安卓包身份独立、签名有效且图标等同参考原图标', independentPackage);

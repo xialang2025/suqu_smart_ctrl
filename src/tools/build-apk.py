@@ -38,6 +38,33 @@ def run(arguments, env=None, cwd=None):
     return output
 
 
+def source_fingerprint():
+    """
+    Function Name   : source_fingerprint
+    Description     : Fingerprint only build inputs without inspecting private signing material.
+    Input Parameters: None
+    Return Value    : SHA-256 of sorted input paths and file digests.
+    Date            : 2026.11.10
+    """
+    #20261110-8 add - Preserve source provenance separately from generated or secret files.
+    names = ['App.vue', 'main.js', 'index.html', 'pages.json', 'manifest.json',
+             'vite.config.js', 'package.json', 'package-lock.json', 'common', 'pages',
+             'components', 'static', 'android', 'tools']
+    inputs = []
+    digest = hashlib.sha256()
+    for name in names:
+        entry = ROOT / name
+        if entry.is_file():
+            inputs.append(entry)
+        elif entry.is_dir():
+            inputs.extend(item for item in entry.rglob('*') if item.is_file() and '__pycache__' not in item.parts
+                          and not item.name.endswith('.baiduyun.uploading.cfg'))  #20261110-8 change
+    for item in sorted(inputs):
+        digest.update(item.relative_to(ROOT).as_posix().encode('utf-8') + b'\0')
+        digest.update(hashlib.sha256(item.read_bytes()).digest())
+    return digest.hexdigest()
+
+
 def main():
     """
     Function Name   : main
@@ -69,11 +96,15 @@ def main():
     verification = None
     report = None
     icon_bytes = None
+    source_sha256 = source_fingerprint()  #20261110-8 add
+    asset_paths = None
+    certificate = None
 
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
     run(['node', ROOT / 'tools/build.mjs'], cwd=ROOT)
-    shutil.copytree(ROOT / 'unpackage/h5', workspace / 'assets')
+    shutil.copytree(ROOT / 'unpackage/h5', workspace / 'assets',
+                    ignore=shutil.ignore_patterns('*.baiduyun.uploading.cfg'))  #20261110-8 change - Exclude network-drive sync sidecars.
     shutil.copytree(ROOT / 'android/res', workspace / 'res')
     native_manifest = (ROOT / 'android/AndroidManifest.xml').read_text('utf-8')
     if args.debug:
@@ -124,11 +155,28 @@ def main():
         raise RuntimeError('APK identity or minimum SDK does not match this application.')
     with zipfile.ZipFile(apk) as archive:
         icon_bytes = archive.read(re.search(r"application-icon-640:'([^']+)'", badging).group(1))
+        #20261110-8 add - Verify the packaged web bytes against this build's actual output.
+        asset_paths = [item for item in (workspace / 'assets').rglob('*') if item.is_file()]
+        if {name for name in archive.namelist() if name.startswith('assets/') and not name.endswith('/')} != {
+                'assets/' + item.relative_to(workspace / 'assets').as_posix() for item in asset_paths}:
+            raise RuntimeError('Packaged web asset list differs from current compiled output.')
+        for item in asset_paths:
+            if archive.read('assets/' + item.relative_to(workspace / 'assets').as_posix()) != item.read_bytes():
+                raise RuntimeError('Packaged web bytes differ from current compiled output.')
+            if item.read_bytes() != (ROOT / 'unpackage/h5' / item.relative_to(workspace / 'assets')).read_bytes():
+                raise RuntimeError('Compiled web output changed during APK construction.')
+    certificate = re.search(r'Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]{64})', verification)
+    if certificate is None or source_fingerprint() != source_sha256:
+        raise RuntimeError('Signing provenance missing or source inputs changed during this build.')
+    if not args.debug and 'application-debuggable' in badging:
+        raise RuntimeError('Release APK unexpectedly enables debugging.')
     report = {'name': manifest['name'], 'package': 'cn.suqu.smartcontrol', 'versionName': manifest['versionName'],
               'minSdk': 23, 'targetSdk': 35, 'debuggable': 'application-debuggable' in badging,
               'signatureVerified': 'Verifies' in verification, 'apk': str(apk),
               'sha256': hashlib.sha256(apk.read_bytes()).hexdigest(), 'bytes': apk.stat().st_size,
-              'iconSha256': hashlib.sha256(icon_bytes).hexdigest()}
+              'iconSha256': hashlib.sha256(icon_bytes).hexdigest(),
+              'webAssetsVerified': True, 'certificateSha256': certificate.group(1).lower(),
+              'sourceSha256': source_sha256}  #20261110-8 change
     apk.with_suffix('.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print('APK:', apk, '\nSHA-256:', report['sha256'])
 

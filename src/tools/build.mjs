@@ -25,6 +25,9 @@ function copySource(source, target) {
     const directory = fs.statSync(source).isDirectory();
     let entries;
 
+    if (path.basename(source).endsWith('.baiduyun.uploading.cfg')) { //20261110-8 add - Local synchronization metadata is never an application input.
+        return;
+    }
     if (directory) {
         fs.mkdirSync(target, { recursive: true });
         entries = fs.readdirSync(source);

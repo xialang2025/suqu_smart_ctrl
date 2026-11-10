@@ -36,7 +36,8 @@
         <view class="section data-panel" data-window="receive">
             <view class="panel-heading"><view class="section-title">接收窗口</view><button class="clear-button" data-action="clear-receive" @click="clearRecords('receive')">清空</button></view>
             <view v-if="state.receivedDropped" class="capacity-note">已淘汰最旧 {{ state.receivedDropped }} 条显示记录</view>
-            <scroll-view ref="receiveScroll" class="data-scroll" scroll-y :scroll-into-view="receiveAnchor" @scroll="receiveScrolled" @scrolltolower="receiveFollowing = true">
+            <!-- //20261110-8 change - Revoke follow on reader input before a deferred scroll event can race new bytes. -->
+            <scroll-view ref="receiveScroll" class="data-scroll" scroll-y :scroll-into-view="receiveAnchor" @touchstart="receiveFollowing = false" @wheel="receiveFollowing = false" @scroll="receiveScrolled" @scrolltolower="receiveFollowing = true">
                 <view v-for="record in state.received" :id="'receive-' + record.id" :key="record.id" class="data-record" data-direction="receive" :data-record-type="record.type">
                     <view v-if="record.type === 'marker'" class="session-marker">{{ record.time }} · {{ record.text }}</view>
                     <template v-else>
@@ -50,7 +51,7 @@
         <view class="section data-panel send-panel" data-window="send">
             <view class="panel-heading"><view class="section-title">发送窗口</view><button class="clear-button" data-action="clear-send" @click="clearRecords('send')">清空</button></view>
             <view v-if="state.sentDropped" class="capacity-note">已淘汰最旧 {{ state.sentDropped }} 条显示记录</view>
-            <scroll-view ref="sendScroll" class="data-scroll" scroll-y :scroll-into-view="sendAnchor" @scroll="sendScrolled" @scrolltolower="sendFollowing = true">
+            <scroll-view ref="sendScroll" class="data-scroll" scroll-y :scroll-into-view="sendAnchor" @touchstart="sendFollowing = false" @wheel="sendFollowing = false" @scroll="sendScrolled" @scrolltolower="sendFollowing = true">
                 <view v-for="record in state.sent" :id="'send-' + record.id" :key="record.id" class="data-record" data-direction="send" :data-record-type="record.type">
                     <view v-if="record.type === 'marker'" class="session-marker">{{ record.time }} · {{ record.text }}</view>
                     <template v-else>
