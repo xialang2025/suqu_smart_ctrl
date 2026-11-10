@@ -24,4 +24,14 @@ button { font: inherit; }
 .device-name { font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
 .device-address { margin-top: 6px; font-family: Consolas, monospace; font-size: 13px; color: #617185; }
 .device-meta { display: flex; justify-content: space-between; color: #617185; font-size: 13px; margin-top: 12px; }
+/*20261110-2 add - Separate a ready device from its raw receive window. */
+.ready { color: #127b57; font-weight: 600; }
+.connect { margin-top: 14px; }
+.control-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.control-device { margin-top: 20px; }
+.data-panel { padding: 14px; }
+.data-scroll { display: block; height: 54vh; margin-top: 10px; }
+.data-record { padding: 10px 0; border-bottom: 1px solid #e6edf5; }
+.record-meta { color: #75859a; font-size: 12px; }
+.record-bytes { font-family: Consolas, monospace; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.6; margin-top: 5px; font-size: 15px; }
 </style>

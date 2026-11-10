@@ -1,21 +1,41 @@
 <template>
-    <view class="screen" data-page="devices">
+    <view v-if="state.page === 'devices'" class="screen" data-page="devices">
         <view class="brand">速驱智控</view>
         <view class="subtitle">蓝牙设备 · 原始数据透传</view>
         <view class="section">
             <view class="section-title">设备页</view>
             <view class="notice" role="status">{{ state.message || '正在检查蓝牙状态…' }}</view>
             <view class="actions">
-                <button class="primary" data-action="scan" :disabled="state.status === 'initializing'" @click="toggleScan">{{ state.scanning ? '停止扫描' : '重新扫描' }}</button>
+                <button class="primary" data-action="scan" :disabled="['initializing', 'connecting', 'ready'].includes(state.status)" @click="toggleScan">{{ state.scanning ? '停止扫描' : '重新扫描' }}</button>
                 <button v-if="state.status === 'unavailable'" class="secondary" @click="openSettings">系统设置</button>
             </view>
         </view>
-        <view v-for="device in state.devices" :key="device.deviceId" class="device-card" :data-device="device.deviceId">
+        <view v-for="device in state.devices" :key="device.deviceId" class="device-card" :data-device="device.deviceId" @click="enterDevice(device)">
             <view class="device-name">{{ device.name }}</view>
             <view class="device-address">{{ device.deviceId }}</view>
-            <view class="device-meta">信号 {{ device.rssi }} dBm <text>未连接</text></view>
+            <view class="device-meta">信号 {{ device.rssi }} dBm <text :class="{ ready: isReady(device) }">{{ deviceStatus(device) }}</text></view>
+            <button v-if="!isReady(device)" class="primary connect" :data-connect="device.deviceId" :disabled="state.status === 'connecting' || state.status === 'ready'" @click.stop="application.connect(device.deviceId)">{{ state.currentDevice?.deviceId === device.deviceId && state.status === 'connecting' ? '连接中…' : '连接' }}</button>
         </view>
         <view v-if="!state.devices.length" class="empty">{{ state.scanning ? '正在寻找附近的蓝牙设备…' : '暂无设备' }}<br />请确认模块已开启</view>
+    </view>
+    <view v-else class="screen control-screen" data-page="control">
+        <view class="control-heading">
+            <button class="secondary" data-action="back" @click="application.backToDevices">返回设备页</button>
+            <text class="ready">{{ state.status === 'ready' ? '已就绪' : '未就绪' }}</text>
+        </view>
+        <view class="device-name control-device">{{ state.currentDevice?.name }}</view>
+        <view class="device-address">{{ state.currentDevice?.deviceId }}</view>
+        <view class="notice" role="status">{{ state.message }}</view>
+        <view class="section data-panel">
+            <view class="section-title">接收窗口</view>
+            <scroll-view class="data-scroll" scroll-y>
+                <view v-for="record in state.received" :key="record.id" class="data-record" data-direction="receive">
+                    <view class="record-meta">{{ record.time }} · {{ record.length }} 字节</view>
+                    <view class="record-bytes">{{ record.text }}</view>
+                </view>
+                <view v-if="!state.received.length" class="empty">等待设备数据</view>
+            </scroll-view>
+        </view>
     </view>
 </template>
 <script setup>
@@ -35,6 +55,44 @@ const unsubscribe = application.subscribe(observe);
  ******************************************************************************/
 function observe(next) {
     state.value = next;
+}
+
+/******************************************************************************
+ * Function Name   : isReady
+ * Description     : Identify the only device whose communication preparation has completed.
+ * Input Parameters: device
+ * Return Value    : True for the current ready device.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function isReady(device) { //20261110-2 add
+    return state.value.status === 'ready' && state.value.currentDevice?.deviceId === device.deviceId;
+}
+
+/******************************************************************************
+ * Function Name   : deviceStatus
+ * Description     : Describe connection preparation separately from a usable device.
+ * Input Parameters: device
+ * Return Value    : Localized device status.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function deviceStatus(device) { //20261110-2 add
+    if (isReady(device)) {
+        return '已就绪';
+    }
+    return state.value.status === 'connecting' && state.value.currentDevice?.deviceId === device.deviceId ? '连接中' : '未连接';
+}
+
+/******************************************************************************
+ * Function Name   : enterDevice
+ * Description     : Enter control only when the user clicks the current ready card.
+ * Input Parameters: device
+ * Return Value    : None
+ * Date            : 2026.11.10
+ ******************************************************************************/
+function enterDevice(device) { //20261110-2 add
+    if (isReady(device)) {
+        application.openControl();
+    }
 }
 
 /******************************************************************************

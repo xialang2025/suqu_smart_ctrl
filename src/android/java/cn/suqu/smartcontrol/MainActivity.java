@@ -5,6 +5,13 @@ import android.Manifest;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCallback;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
+import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
@@ -30,11 +37,14 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import org.json.JSONObject;
+import org.json.JSONArray;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Locale;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.Arrays;
 
 public final class MainActivity extends Activity {
     private static final String ORIGIN = "https://appassets.androidplatform.net";
@@ -48,6 +58,15 @@ public final class MainActivity extends Activity {
     private int activeScanId;
     private boolean requestingPermissions;
     private boolean requestingEnable;
+    //20261110-2 add - Keep the GATT identity distinct from scan and page state.
+    private BluetoothGatt gatt;
+    private int activeConnectionId;
+    private String activeDeviceId = "";
+    private int negotiatedMtu = 23;
+    private int pendingConnect;
+    private int pendingSubscribe;
+    private Runnable connectDeadline;
+    private Runnable subscribeDeadline;
 
     /******************************************************************************
      * Function Name   : onCreate
@@ -143,6 +162,15 @@ public final class MainActivity extends Activity {
             } else if ("stopScan".equals(method)) {
                 if (options.optInt("scanId") == activeScanId) {
                     stopDiscovery();
+                }
+                reply(id, true, object());
+            } else if ("connect".equals(method)) {
+                connectDevice(id, options);
+            } else if ("subscribe".equals(method)) {
+                subscribeDevice(id, options);
+            } else if ("disconnect".equals(method)) {
+                if (options.optInt("connectionId") == activeConnectionId) {
+                    closeConnection("连接已结束", false);
                 }
                 reply(id, true, object());
             } else if ("openSettings".equals(method)) {
@@ -433,10 +461,351 @@ public final class MainActivity extends Activity {
             }
             if (value == BluetoothAdapter.STATE_OFF || value == BluetoothAdapter.STATE_TURNING_OFF) {
                 stopDiscovery();
+                closeConnection("系统蓝牙已关闭", true);
                 emit("adapterState", object("available", false, "message", "系统蓝牙已关闭，请开启后重新检查"));
             }
         }
     };
+
+    /******************************************************************************
+     * Function Name   : connectDevice
+     * Description     : Open one explicitly identified GATT client and prepare its service capabilities.
+     * Input Parameters: id, options
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void connectDevice(int id, JSONObject options) { //20261110-2 add
+        String deviceId = options.optString("deviceId");
+        int connectionId = options.optInt("connectionId");
+
+        if (gatt != null || !permissionsGranted() || adapter == null || !adapter.isEnabled()) {
+            reply(id, false, object("message", gatt != null ? "请先断开当前设备" : "蓝牙条件不足，请重新检查"));
+            return;
+        }
+        stopDiscovery();
+        activeConnectionId = connectionId;
+        activeDeviceId = deviceId;
+        negotiatedMtu = 23;
+        pendingConnect = id;
+        connectDeadline = () -> {
+            if (activeConnectionId == connectionId && pendingConnect == id) {
+                closeConnection("连接准备超时，请重试", true);
+            }
+        };
+        gatt = adapter.getRemoteDevice(deviceId).connectGatt(this, false, new BluetoothGattCallback() {
+                    /******************************************************************************
+                     * Function Name   : onConnectionStateChange
+                     * Description     : Advance only the current GATT client into MTU and service preparation.
+                     * Input Parameters: source, status, newState
+                     * Return Value    : None
+                     * Date            : 2026.11.10
+                     ******************************************************************************/
+                    @Override
+                    public void onConnectionStateChange(BluetoothGatt source, int status, int newState) { //20261110-2 add
+                        handler.post(() -> {
+                            if (source != gatt || connectionId != activeConnectionId) {
+                            try {
+                                source.close();
+                            } catch (SecurityException error) {
+                                android.util.Log.w("SUQU", "Stale GATT already unavailable");
+                            }
+                                return;
+                            }
+                            if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                                closeConnection("设备连接已断开，请手动重连", true);
+                            } else if (newState == BluetoothProfile.STATE_CONNECTED) {
+                                try {
+                                    if (!source.requestMtu(247) && !source.discoverServices()) {
+                                        closeConnection("无法准备设备服务", true);
+                                    }
+                                } catch (SecurityException error) {
+                                    closeConnection("蓝牙权限已失效", true);
+                                }
+                            }
+                        });
+                    }
+
+                    /******************************************************************************
+                     * Function Name   : onMtuChanged
+                     * Description     : Use the actual negotiated MTU rather than the requested value.
+                     * Input Parameters: source, mtu, status
+                     * Return Value    : None
+                     * Date            : 2026.11.10
+                     ******************************************************************************/
+                    @Override
+                    public void onMtuChanged(BluetoothGatt source, int mtu, int status) { //20261110-2 add
+                        handler.post(() -> {
+                            if (source != gatt || connectionId != activeConnectionId) {
+                                return;
+                            }
+                            negotiatedMtu = status == BluetoothGatt.GATT_SUCCESS ? Math.max(23, mtu) : 23;
+                        try {
+                            if (pendingConnect != 0 && !source.discoverServices()) {
+                                closeConnection("无法发现设备服务", true);
+                            }
+                        } catch (SecurityException error) {
+                            closeConnection("蓝牙权限已失效", true);
+                            }
+                        });
+                    }
+
+                    /******************************************************************************
+                     * Function Name   : onServicesDiscovered
+                     * Description     : Return discovered capabilities without marking notification readiness.
+                     * Input Parameters: source, status
+                     * Return Value    : None
+                     * Date            : 2026.11.10
+                     ******************************************************************************/
+                    @Override
+                    public void onServicesDiscovered(BluetoothGatt source, int status) { //20261110-2 add
+                        handler.post(() -> {
+                            int request;
+
+                            if (source != gatt || connectionId != activeConnectionId || pendingConnect == 0) {
+                                return;
+                            }
+                            if (status != BluetoothGatt.GATT_SUCCESS) {
+                                closeConnection("设备服务发现失败", true);
+                                return;
+                            }
+                            request = pendingConnect;
+                            pendingConnect = 0;
+                            handler.removeCallbacks(connectDeadline);
+                            reply(request, true, object("mtu", negotiatedMtu, "services", describeServices(source)));
+                        });
+                    }
+
+                    /******************************************************************************
+                     * Function Name   : onDescriptorWrite
+                     * Description     : Complete receive preparation only after the CCCD write result.
+                     * Input Parameters: source, descriptor, status
+                     * Return Value    : None
+                     * Date            : 2026.11.10
+                     ******************************************************************************/
+                    @Override
+                    public void onDescriptorWrite(BluetoothGatt source, BluetoothGattDescriptor descriptor, int status) { //20261110-2 add
+                        handler.post(() -> {
+                            int request;
+
+                            if (source != gatt || connectionId != activeConnectionId || pendingSubscribe == 0) {
+                                return;
+                            }
+                            request = pendingSubscribe;
+                            pendingSubscribe = 0;
+                            handler.removeCallbacks(subscribeDeadline);
+                            reply(request, status == BluetoothGatt.GATT_SUCCESS, object("message", status == BluetoothGatt.GATT_SUCCESS ? "接收已准备" : "接收通知开启失败"));
+                        });
+                    }
+
+                    /******************************************************************************
+                     * Function Name   : onCharacteristicChanged
+                     * Description     : Snapshot notifications on older Android callback APIs.
+                     * Input Parameters: source, characteristic
+                     * Return Value    : None
+                     * Date            : 2026.11.10
+                     ******************************************************************************/
+                    @Override
+                    public void onCharacteristicChanged(BluetoothGatt source, BluetoothGattCharacteristic characteristic) { //20261110-2 add
+                        deliverNotification(source, connectionId, characteristic, characteristic.getValue());
+                    }
+
+                    /******************************************************************************
+                     * Function Name   : onCharacteristicChanged
+                     * Description     : Use the immutable notification value provided by modern Android.
+                     * Input Parameters: source, characteristic, value
+                     * Return Value    : None
+                     * Date            : 2026.11.10
+                     ******************************************************************************/
+                    @Override
+                    public void onCharacteristicChanged(BluetoothGatt source, BluetoothGattCharacteristic characteristic, byte[] value) { //20261110-2 add
+                        deliverNotification(source, connectionId, characteristic, value);
+                    }
+
+        }, BluetoothDevice.TRANSPORT_LE);
+        if (gatt == null) {
+            closeConnection("无法创建蓝牙连接", true);
+            return;
+        }
+        handler.postDelayed(connectDeadline, 20000);
+    }
+
+    /******************************************************************************
+     * Function Name   : describeServices
+     * Description     : Describe real GATT service and characteristic properties for profile validation.
+     * Input Parameters: source
+     * Return Value    : JSON array of discovered capabilities.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private JSONArray describeServices(BluetoothGatt source) { //20261110-2 add
+        JSONArray result = new JSONArray();
+        JSONArray characteristics;
+        List<BluetoothGattService> services = source.getServices();
+        List<BluetoothGattCharacteristic> values;
+        BluetoothGattService service;
+        BluetoothGattCharacteristic characteristic;
+        int serviceIndex;
+        int valueIndex;
+        int properties;
+
+        for (serviceIndex = 0; serviceIndex < services.size(); serviceIndex++) {
+            service = services.get(serviceIndex);
+            characteristics = new JSONArray();
+            values = service.getCharacteristics();
+            for (valueIndex = 0; valueIndex < values.size(); valueIndex++) {
+                characteristic = values.get(valueIndex);
+                properties = characteristic.getProperties();
+                characteristics.put(object("uuid", characteristic.getUuid().toString(),
+                        "properties", object("write", (properties & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0,
+                        "writeNoResponse", (properties & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0,
+                        "notify", (properties & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0,
+                        "indicate", (properties & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0)));
+            }
+            result.put(object("uuid", service.getUuid().toString(), "characteristics", characteristics));
+        }
+        return result;
+    }
+
+    /******************************************************************************
+     * Function Name   : profileUuid
+     * Description     : Expand short profile UUIDs while preserving exact full UUIDs.
+     * Input Parameters: value
+     * Return Value    : Parsed UUID.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private UUID profileUuid(String value) { //20261110-2 add
+        return UUID.fromString(value.length() == 4 ? "0000" + value + "-0000-1000-8000-00805f9b34fb" : value);
+    }
+
+    /******************************************************************************
+     * Function Name   : receiveCharacteristic
+     * Description     : Find only the requested characteristic in the current GATT service.
+     * Input Parameters: options
+     * Return Value    : Matching characteristic or null.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private BluetoothGattCharacteristic receiveCharacteristic(JSONObject options) { //20261110-2 add
+        BluetoothGattService service;
+
+        if (gatt == null || options.optInt("connectionId") != activeConnectionId
+                || !options.optString("deviceId").equalsIgnoreCase(activeDeviceId)) {
+            return null;
+        }
+        service = gatt.getService(profileUuid(options.optString("serviceId")));
+        return service == null ? null : service.getCharacteristic(profileUuid(options.optString("characteristicId")));
+    }
+
+    /******************************************************************************
+     * Function Name   : subscribeDevice
+     * Description     : Enable only the requested receive notification and wait for its descriptor result.
+     * Input Parameters: id, options
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void subscribeDevice(int id, JSONObject options) { //20261110-2 add
+        BluetoothGattCharacteristic characteristic = receiveCharacteristic(options);
+        BluetoothGattDescriptor descriptor;
+        byte[] value;
+        BluetoothGatt source = gatt;
+
+        if (characteristic == null || pendingSubscribe != 0) {
+            reply(id, false, object("message", "接收通道不可用"));
+            return;
+        }
+        descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"));
+        if (descriptor == null || !source.setCharacteristicNotification(characteristic, true)) {
+            reply(id, false, object("message", "接收通知开启失败"));
+            return;
+        }
+        value = (characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
+                ? BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE : BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
+        pendingSubscribe = id;
+        subscribeDeadline = () -> {
+            if (gatt == source && pendingSubscribe == id) {
+                closeConnection("接收通知准备超时", true);
+            }
+        };
+        descriptor.setValue(value);
+        if (!source.writeDescriptor(descriptor)) {
+            pendingSubscribe = 0;
+            reply(id, false, object("message", "接收通知准备被系统拒绝"));
+            return;
+        }
+        handler.postDelayed(subscribeDeadline, 5000);
+    }
+
+    /******************************************************************************
+     * Function Name   : deliverNotification
+     * Description     : Snapshot each native byte fragment before dispatching on the UI thread.
+     * Input Parameters: source, connectionId, characteristic, value
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void deliverNotification(BluetoothGatt source, int connectionId, BluetoothGattCharacteristic characteristic, byte[] value) { //20261110-2 add
+        byte[] snapshot = value == null ? new byte[0] : Arrays.copyOf(value, value.length);
+        String serviceId = characteristic.getService().getUuid().toString();
+        String characteristicId = characteristic.getUuid().toString();
+
+        handler.post(() -> {
+            JSONArray bytes = new JSONArray();
+            int index;
+
+            if (source != gatt || connectionId != activeConnectionId) {
+                return;
+            }
+            for (index = 0; index < snapshot.length; index++) {
+                bytes.put(snapshot[index] & 255);
+            }
+            emit("notification", object("deviceId", activeDeviceId, "connectionId", connectionId,
+                    "serviceId", serviceId, "characteristicId", characteristicId, "value", bytes));
+        });
+    }
+
+    /******************************************************************************
+     * Function Name   : closeConnection
+     * Description     : Detach ownership before releasing GATT and settling pending preparation requests.
+     * Input Parameters: message, notify
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    private void closeConnection(String message, boolean notify) { //20261110-2 add
+        BluetoothGatt previous = gatt;
+        int connectionId = activeConnectionId;
+        String deviceId = activeDeviceId;
+        int connecting = pendingConnect;
+        int subscribing = pendingSubscribe;
+
+        gatt = null;
+        activeConnectionId = 0;
+        pendingConnect = 0;
+        pendingSubscribe = 0;
+        if (connectDeadline != null) {
+            handler.removeCallbacks(connectDeadline);
+        }
+        if (subscribeDeadline != null) {
+            handler.removeCallbacks(subscribeDeadline);
+        }
+        if (previous != null) {
+            try {
+                previous.disconnect();
+            } catch (Exception error) {
+                android.util.Log.w("SUQU", "GATT disconnect already unavailable");
+            }
+            try {
+                previous.close();
+            } catch (SecurityException error) {
+                android.util.Log.w("SUQU", "GATT close already unavailable");
+            }
+        }
+        if (connecting != 0) {
+            reply(connecting, false, object("message", message, "code", "connection"));
+        }
+        if (subscribing != 0) {
+            reply(subscribing, false, object("message", message, "code", "connection"));
+        }
+        if (notify && connectionId != 0) {
+            emit("connectionChanged", object("deviceId", deviceId, "connectionId", connectionId, "connected", false, "message", message));
+        }
+    }
 
     private final class NativeBridge {
         /******************************************************************************
@@ -497,6 +866,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         stopDiscovery(); //20261110-1 add - Release discovery when the activity ends.
+        closeConnection("应用已退出", false); //20261110-2 add - Never retain a GATT client after activity destruction.
         unregisterReceiver(adapterReceiver);
         if (web != null) {
             web.destroy();

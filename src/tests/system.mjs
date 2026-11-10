@@ -21,6 +21,16 @@ export function createSystem(options = {}) {
         initialize: async function initialize() { calls.push({ method: 'initialize' }); return options.initialization || { available: true }; },
         startScan: async function startScan(value) { calls.push({ method: 'startScan', ...value }); return {}; },
         stopScan: async function stopScan(value) { calls.push({ method: 'stopScan', ...value }); return {}; },
+        //20261110-2 add - Model only the Android GATT boundary, never application internals.
+        connect: async function connect(value) {
+            calls.push({ method: 'connect', ...value });
+            return { mtu: 23, services: options.services || [{ uuid: 'FFE0', characteristics: [
+                { uuid: 'FFE1', properties: { write: true } },
+                { uuid: 'FFE2', properties: { notify: true } },
+            ] }] };
+        },
+        subscribe: async function subscribe(value) { calls.push({ method: 'subscribe', ...value }); return {}; },
+        disconnect: async function disconnect(value) { calls.push({ method: 'disconnect', ...value }); return {}; },
         on: function on(name, callback) { listeners.set(name, [...(listeners.get(name) || []), callback]); },
     };
 

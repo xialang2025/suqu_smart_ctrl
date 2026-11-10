@@ -8,10 +8,165 @@
  ******************************************************************************/
 export function createApplication(platform, clock = globalThis) { //20261110-1 change
     const listeners = new Set();
-    const state = { page: 'devices', status: 'idle', message: '', devices: [], scanning: false, available: false };
-    const app = { state, start, subscribe, scan, stopScan };
+    const state = { //20261110-2 change - Keep the connected device and records outside the page lifetime.
+        page: 'devices', status: 'idle', message: '', devices: [], scanning: false, available: false,
+        currentDevice: null, connectionId: 0, target: null, mtu: 23, received: [],
+    };
+    const app = { state, start, subscribe, scan, stopScan, connect, openControl, backToDevices };
     let scanSequence = 0;
     let scanTimer = null;
+    let connectionSequence = 0;
+    let recordSequence = 0;
+
+    platform.on?.('notification', onNotification);
+    platform.on?.('connectionChanged', onConnectionChanged);
+
+    /******************************************************************************
+     * Function Name   : onConnectionChanged
+     * Description     : Revoke readiness when the current native link is lost.
+     * Input Parameters: event
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function onConnectionChanged(event) { //20261110-2 add
+        if (event.connected || event.connectionId !== state.connectionId
+                || String(event.deviceId).toUpperCase() !== state.currentDevice?.deviceId) {
+            return;
+        }
+        state.status = state.available ? 'disconnected' : 'unavailable';
+        state.target = null;
+        state.message = event.message || '设备连接已断开，请手动重连';
+        publish();
+    }
+
+    /******************************************************************************
+     * Function Name   : onNotification
+     * Description     : Preserve each current-device notification without changing its fragment boundary.
+     * Input Parameters: event
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function onNotification(event) { //20261110-2 add
+        const bytes = Array.from(new Uint8Array(event.value || []));
+        const time = new Date(clock.now ? clock.now() : Date.now()).toLocaleTimeString('zh-CN', { hour12: false });
+
+        if (!state.target || event.connectionId !== state.connectionId
+                || String(event.deviceId).toUpperCase() !== state.currentDevice?.deviceId
+                || !matchesUuid(event.serviceId, state.target.serviceId)
+                || !matchesUuid(event.characteristicId, state.target.receiveId)) {
+            return;
+        }
+        state.received.push({
+            id: ++recordSequence, type: 'data', time, length: bytes.length,
+            text: bytes.map(function hex(value) { return value.toString(16).padStart(2, '0').toUpperCase(); }).join(' '),
+        });
+        publish();
+    }
+
+    /******************************************************************************
+     * Function Name   : connect
+     * Description     : Prepare communication on the device page before allowing entry.
+     * Input Parameters: deviceId
+     * Return Value    : Promise resolved when readiness is known.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    async function connect(deviceId) { //20261110-2 add
+        const device = state.devices.find(function same(item) { return item.deviceId === deviceId; });
+        let result;
+        let connectionId;
+        let service;
+        let send;
+        let receive;
+
+        if (!device || !state.available || state.status === 'connecting' || state.status === 'ready') {
+            return;
+        }
+        connectionId = ++connectionSequence;
+        state.connectionId = connectionId;
+        state.currentDevice = { ...device };
+        state.status = 'connecting';
+        await stopScan();
+        state.message = '正在连接并准备接收…';
+        publish();
+        try {
+            result = await platform.connect({ deviceId, connectionId });
+            if (state.connectionId !== connectionId || state.status !== 'connecting') {
+                return;
+            }
+            state.mtu = result.mtu || 23;
+            service = (result.services || []).find(function target(item) { return matchesUuid(item.uuid, 'FFE0'); });
+            send = service?.characteristics?.find(function writable(item) { return matchesUuid(item.uuid, 'FFE1') && (item.properties?.write || item.properties?.writeNoResponse); });
+            receive = service?.characteristics?.find(function notifiable(item) { return matchesUuid(item.uuid, 'FFE2') && (item.properties?.notify || item.properties?.indicate); });
+            if (!service || !send || !receive) {
+                throw new Error('暂不支持该设备：未找到所需收发通道');
+            }
+            state.target = {
+                serviceId: service.uuid, sendId: send.uuid, receiveId: receive.uuid,
+                writeNoResponse: !send.properties.write && Boolean(send.properties.writeNoResponse),
+            };
+            await platform.subscribe({ deviceId, connectionId, serviceId: service.uuid, characteristicId: receive.uuid });
+            if (state.connectionId !== connectionId || state.status !== 'connecting') {
+                return;
+            }
+            state.status = 'ready';
+            state.message = '设备已就绪，点击设备卡片进入控制页面';
+        } catch (error) {
+            state.status = 'disconnected';
+            state.target = null;
+            state.message = error.message || '连接准备失败，请重试';
+            try {
+                await platform.disconnect({ deviceId, connectionId });
+            } catch (cleanupError) {
+                state.message += '；请重新检查蓝牙状态';
+            }
+        }
+        publish();
+    }
+
+    /******************************************************************************
+     * Function Name   : openControl
+     * Description     : Enter control only after the selected device is fully ready.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function openControl() { //20261110-2 add
+        if (state.status === 'ready') {
+            state.page = 'control';
+            state.message = '设备已就绪'; //20261110-2 add - Keep navigation instructions outside the control page.
+            publish();
+        }
+    }
+
+    /******************************************************************************
+     * Function Name   : backToDevices
+     * Description     : Return to the device page without replacing its shared connection.
+     * Input Parameters: None
+     * Return Value    : None
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function backToDevices() { //20261110-2 add
+        state.page = 'devices';
+        if (state.status === 'ready') {
+            state.message = '设备已就绪，点击设备卡片进入控制页面';
+        }
+        publish();
+    }
+
+    /******************************************************************************
+     * Function Name   : matchesUuid
+     * Description     : Compare a profile UUID with either its exact short or standard full form.
+     * Input Parameters: actual, short
+     * Return Value    : True only for the intended Bluetooth UUID.
+     * Date            : 2026.11.10
+     ******************************************************************************/
+    function matchesUuid(actual, short) { //20261110-2 add
+        const uuid = String(actual || '').toUpperCase();
+        const expected = String(short || '').toUpperCase();
+
+        return (uuid.length === 4 ? '0000' + uuid + '-0000-1000-8000-00805F9B34FB' : uuid)
+                === (expected.length === 4 ? '0000' + expected + '-0000-1000-8000-00805F9B34FB' : expected);
+    }
 
     platform.on?.('deviceFound', onDeviceFound);
     platform.on?.('scanFailed', onScanFailed);
@@ -45,6 +200,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     function onAdapterState(event) { //20261110-1 add
         if (!event.available) {
             state.available = false;
+            state.target = null; //20261110-2 add - No notification remains eligible after adapter loss.
             scanSequence++;
             clock.clearTimeout(scanTimer);
             state.scanning = false;
@@ -87,7 +243,7 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function scan() { //20261110-1 add
         const scanId = ++scanSequence;
 
-        if (!state.available) {
+        if (!state.available || state.status === 'connecting' || state.status === 'ready') {
             return;
         }
         clock.clearTimeout(scanTimer);
@@ -171,6 +327,9 @@ export function createApplication(platform, clock = globalThis) { //20261110-1 c
     async function start() {
         let result;
 
+        if (state.status === 'connecting' || state.status === 'ready') { //20261110-2 add - A scan retry cannot replace an active device session.
+            return;
+        }
         state.page = 'devices';
         state.status = 'initializing';
         publish();

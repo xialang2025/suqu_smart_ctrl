@@ -75,6 +75,10 @@ export function createNativePlatform(transport, host = globalThis, clock = globa
         startScan: function startScan(options) { return call('startScan', options); },
         stopScan: function stopScan(options) { return call('stopScan', options); },
         openSettings: function openSettings() { return call('openSettings'); },
+        //20261110-2 add - Keep GATT discovery and notification preparation observable to the application.
+        connect: function connect(options) { return call('connect', options); },
+        subscribe: function subscribe(options) { return call('subscribe', options); },
+        disconnect: function disconnect(options) { return call('disconnect', options); },
         on: function on(name, callback) {
             const callbacks = listeners.get(name) || new Set();
 
