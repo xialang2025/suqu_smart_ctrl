@@ -6,7 +6,7 @@
 
 设备名称沿用原有的首尾空白清理，清理后必须以大写`VG`开头；`VG`、`VG7439-56EB2DF8`可显示，`vg`、`Vg`、`XVG`、其他名称及无名称设备不显示。筛选在应用设备模型入口执行，同地址重复广播更新原卡片；当前广播名称不再符合时移除旧卡片，过期扫描事件不改变当前列表。保留按实际服务、特征及订阅验证就绪的流程。
 
-图标来源为工作区`图标/手机APP桌面图标2.png`，原图1254×1254、RGB，SHA256为`5781778ade4e71f4a435d57f08bad54585aa781408bdfbca414c8bf1153df3e8`。原图保持不变，仅用Lanczos等比例缩小为安卓资源：hdpi 72×72、xhdpi 96×96、xxhdpi 144×144、xxxhdpi 192×192。资源位于`android/res/drawable-*/icon.png`，由原有清单`@drawable/icon`作为安装后的应用图标；正式APK检查逐项核对四种密度的实际PNG字节。
+图标来源为工作区`图标/手机APP桌面图标2.png`，原图1254×1254、RGB，SHA256为`5781778ade4e71f4a435d57f08bad54585aa781408bdfbca414c8bf1153df3e8`。原始文件保持不变；按用户后续要求使用内置imagegen去除外围白底，透明主图保存在`assets/launcher-icon-transparent.png`，处理提示词及来源见[图标处理说明](./assets/图标处理说明.md)。用Lanczos保留alpha等比例缩小为安卓资源：hdpi 72×72、xhdpi 96×96、xxhdpi 144×144、xxxhdpi 192×192。资源位于`android/res/drawable-*/icon.png`，由原有清单`@drawable/icon`作为安装后的应用图标；正式APK检查逐项核对四种密度PNG字节、外围四角完全透明及中央主体区域alpha至少250。主图中心alpha为253，接近不透明，避免将保留主体错误要求为每个像素都恰好255。
 
 ## 检查与构建
 
@@ -19,6 +19,8 @@ npm.cmd run test:package
 ```
 
 构建需要 JDK17、安卓 Platform35 和 Build Tools35。默认使用本机已存在的 `%LOCALAPPDATA%\REA-Android-Tools`，可用 `SUQU_ANDROID_TOOLS` 指定；网页编译器优先本目录依赖，可用 `SUQU_NODE_MODULES` 指向同版本依赖目录。
+
+正式APK图标透明度检查使用Python的Pillow库，从实际APK提取PNG检查alpha；本轮环境已具备该库。
 
 正式产物位于 `dist/速驱智控-1.0.0.apk`，对应 JSON 包含签名核验和文件校验值。`private/` 中的密钥和凭据不得删除、覆盖或提交；后续覆盖安装应沿用同一签名。构建输出、依赖、密钥和本机截图均已忽略，不进入代码提交。
 
