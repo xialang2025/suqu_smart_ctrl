@@ -15,4 +15,13 @@ button { font: inherit; }
 .section-title { font-size: 18px; font-weight: 600; }
 .notice { margin-top: 12px; color: #586c82; font-size: 14px; line-height: 1.6; }
 .empty { text-align: center; padding: 48px 16px; color: #718298; line-height: 1.8; }
+/*20261110-1 add - Keep scan actions and device identities readable. */
+.actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.primary, .secondary { margin: 0; padding: 0 18px; min-height: 44px; line-height: 44px; font-size: 15px; border-radius: 8px; }
+.primary { background: #1668b5; color: white; }
+.secondary { background: #edf3f9; color: #155fa9; }
+.device-card { margin-top: 14px; padding: 18px; background: #fff; border: 1px solid #dce5ef; border-radius: 12px; }
+.device-name { font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.device-address { margin-top: 6px; font-family: Consolas, monospace; font-size: 13px; color: #617185; }
+.device-meta { display: flex; justify-content: space-between; color: #617185; font-size: 13px; margin-top: 12px; }
 </style>

@@ -66,3 +66,62 @@ async function renderStartup() {
 }
 
 test('编译后的设备页显示真实不可用状态且无页面异常', renderStartup);
+
+/******************************************************************************
+ * Function Name   : renderDiscoveredCards
+ * Description     : Exercise the compiled page with only the Android transport substituted.
+ * Input Parameters: None
+ * Return Value    : Promise resolved after card and scan-button assertions.
+ * Date            : 2026.11.10
+ ******************************************************************************/
+async function renderDiscoveredCards() {
+    const assets = path.join(root, 'unpackage/h5');
+    const server = http.createServer(function serve(request, response) {
+        const name = new URL(request.url, 'http://localhost').pathname;
+        const file = path.resolve(assets, '.' + (name === '/' ? '/index.html' : name));
+
+        if (!file.startsWith(assets + path.sep) || !fs.existsSync(file)) {
+            response.writeHead(404).end();
+            return;
+        }
+        response.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
+        response.end(fs.readFileSync(file));
+    });
+    let browser;
+    let page;
+
+    await new Promise(function listen(resolve) { server.listen(0, '127.0.0.1', resolve); });
+    try {
+        browser = await chromium.launch({ channel: 'msedge', headless: true });
+        page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+        await page.addInitScript(function installSystemBoundary() {
+            window.NativeBle = { postMessage: function postMessage(text) {
+                const packet = JSON.parse(text);
+
+                queueMicrotask(function reply() {
+                    window.__suquReply(packet.id, true, packet.method === 'initialize' ? { available: true } : {});
+                    if (packet.method === 'startScan') {
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:01', name: '改名模块', rssi: -70 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:01', name: '改名模块', rssi: -40 });
+                        window.__suquEvent('deviceFound', { scanId: packet.options.scanId, deviceId: 'AA:02', name: '', rssi: -60 });
+                    }
+                });
+            } };
+        });
+        await page.goto('http://127.0.0.1:' + server.address().port);
+        await page.locator('[data-device="AA:01"]').waitFor({ timeout: 2000 });
+        assert.equal(await page.locator('[data-device]').count(), 2);
+        assert.ok(await page.getByText('未命名设备', { exact: true }).isVisible());
+        await page.locator('[data-action="scan"]').click();
+        await page.getByText('重新扫描', { exact: true }).waitFor();
+        assert.equal(await page.locator('[data-device]').count(), 2);
+        await page.screenshot({ path: path.join(root, 'artifacts/discovery.png'), fullPage: true });
+    } finally {
+        if (browser) {
+            await browser.close();
+        }
+        await new Promise(function close(resolve) { server.close(resolve); });
+    }
+}
+
+test('编译设备页显示去重卡片，并可停止扫描保留结果', renderDiscoveredCards);

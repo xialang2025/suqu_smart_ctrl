@@ -14,7 +14,13 @@ import { createNativePlatform } from '../common/native-platform.js';
 async function startupAcrossNativeBridge() {
     const packets = [];
     const host = {};
-    const transport = { postMessage: function (packet) { packets.push(JSON.parse(packet)); } };
+    const transport = { postMessage: function (packet) {
+        const value = JSON.parse(packet);
+        packets.push(value);
+        if (value.method === 'startScan' || value.method === 'stopScan') {
+            queueMicrotask(function respond() { host.__suquReply(value.id, true, {}); });
+        }
+    } };
     const platform = createNativePlatform(transport, host);
     const app = createApplication(platform);
     const pending = app.start();
@@ -24,7 +30,8 @@ async function startupAcrossNativeBridge() {
     await pending;
     assert.equal(app.state.page, 'devices');
     assert.equal(app.state.status, 'idle');
-    assert.equal(app.state.message, '蓝牙已开启');
+    assert.equal(app.state.scanning, true); //20261110-1 change - Startup now discovers automatically after the real reply.
+    await app.stopScan();
 }
 
 test('原生初始化回包驱动真实应用状态，链路可用不等于设备就绪', startupAcrossNativeBridge);

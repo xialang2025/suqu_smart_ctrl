@@ -8,6 +8,7 @@
  ******************************************************************************/
 export function createNativePlatform(transport, host = globalThis, clock = globalThis) {
     const pending = new Map();
+    const listeners = new Map(); //20261110-1 add - Register system events once for the application owner.
     let sequence = 0;
 
     /******************************************************************************
@@ -63,5 +64,23 @@ export function createNativePlatform(transport, host = globalThis, clock = globa
     }
 
     host.__suquReply = receiveReply;
-    return { initialize: function initialize() { return call('initialize'); } };
+    //20261110-1 add - Android emits only transport-boundary events; application filtering stays in the real model.
+    host.__suquEvent = function receiveEvent(name, value) {
+        for (const callback of listeners.get(name) || []) {
+            callback(value);
+        }
+    };
+    return {
+        initialize: function initialize() { return call('initialize'); },
+        startScan: function startScan(options) { return call('startScan', options); },
+        stopScan: function stopScan(options) { return call('stopScan', options); },
+        openSettings: function openSettings() { return call('openSettings'); },
+        on: function on(name, callback) {
+            const callbacks = listeners.get(name) || new Set();
+
+            callbacks.add(callback);
+            listeners.set(name, callbacks);
+            return function off() { callbacks.delete(callback); };
+        },
+    };
 }
